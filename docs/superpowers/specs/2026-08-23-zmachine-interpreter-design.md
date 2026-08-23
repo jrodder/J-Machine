@@ -37,7 +37,8 @@ terminals like nomadnet. The network context drives every design choice:
 - v8 movie/stream opcodes (no-op stubs; games continue).
 - Undo (opcode reports unsupported; the standard marks it optional and the
   conformance suites treat it as optional).
-- Graphics, ANSI/color, screen paging / `[MORE]`, multiple concurrent players.
+- Graphics, ANSI/color, screen paging / `[MORE]` (multi-session hosting is
+  Phase 2 server territory; `Session` objects are independent by design).
 - Any Reticulum or nomadnet code. Zero Reticulum dependency in Phase 1.
 - Save-image transfer between nodes (saves live on the host node only).
 
@@ -252,6 +253,8 @@ zmach story.z5 [--strict] [--seed <hex>] [--save <file>] [--restore <file>]
    binary, never a runtime dependency.
 3. **Save round-trip:** N turns → `save` → `restore` → N more turns; the
    transcript is byte-identical to the uninterrupted run (seeded RNG).
+   This gate is also the Phase 2 reconnect flow (restore + continued
+   input).
 4. **Fake transport:** the same session driven through a simulated channel
    — 512-byte chunks at arbitrary (non-line-aligned) boundaries, artificial
    latency, message boundaries on input — must produce a transcript
@@ -269,12 +272,20 @@ zmach story.z5 [--strict] [--seed <hex>] [--save <file>] [--restore <file>]
   the CLI: server-mode IN destination + handshake (standard Reticulum
   client-server pattern); game text → `Buffer` stream of `Text` events
   chunked ≤ ~1 KB; input → one message per line.
+- **Multi-session.** The host keeps one independent `Session` per player
+  (fully self-contained: own memory, input buffer, save handler) in a
+  `{reticulum_identity: Session}` map, plus one save file per identity.
+  Player connects → host restores that identity's latest save (or starts
+  fresh) → resume where they left off. Designed for very slow links: a
+  player who plays a few turns and disappears for hours is the normal
+  case — autosave-per-turn (a 65 KB local write) makes
+  restore-on-reconnect lossless.
 - Save/restore handlers map in-game verbs to host-local slots; save
-  images never leave the host node. Autosave-per-turn and
-  restore-on-reconnect are server policy over the same primitives.
-- One player per host; a second connection receives a "busy" message.
-  Identity allow-list auth is one line of Reticulum-native policy,
-  Phase 2 scope.
+  images never leave the host node.
+- **No scale, no DoS hardening** (deliberate): niche deployment, the only
+  accepted input is plain game lines; a flood that OOMs the host is
+  acceptable. An identity allow-list remains a one-line option if ever
+  wanted.
 - Dependency direction is strictly one-way: `reticulum → session`.
   Phase 1 has no Reticulum import anywhere.
 
@@ -318,3 +329,6 @@ J-Machine/
 - Undo out of scope; v8 movie/stream opcodes are no-op stubs.
 - Saves are host-local opaque blobs; network transport of save images is
   explicitly not a Phase 2 requirement.
+- Phase 2 hosting is multi-session: one `Session` + one save file per
+  Reticulum identity, autosave-per-turn, resume-on-reconnect; no scale or
+  DoS hardening (niche deployment) — approved 2026-08-23.
