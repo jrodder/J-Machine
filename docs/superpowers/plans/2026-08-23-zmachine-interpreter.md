@@ -553,8 +553,10 @@ class TestMemory(unittest.TestCase):
 
     def test_reset(self):
         self.m.putw(0x100, 0xDEAD)
+        self.m.putw(0x15000, 0xBEEF)   # past zork1's declared_len (84876)
         self.m.reset()
-        self.assertEqual(self.m.getw(0x100), 0)
+        self.assertEqual(self.m.getw(0x100), 0x20d3)  # story bytes restored
+        self.assertEqual(self.m.getw(0x15000), 0)     # non-story memory cleared
 
     def test_byte_swapped(self):
         import types
@@ -624,8 +626,8 @@ class Memory:
         return v
 
     def putu64(self, a, v):
-        for i in range(3, -1, -1):
-            self.putw(a + i * 2, (v >> (16 * i)) & 0xFFFF)
+        for i in range(4):
+            self.putw(a + i * 2, (v >> (16 * (3 - i))) & 0xFFFF)
 ```
 
 - [ ] **Step 4: Run, verify PASS**
