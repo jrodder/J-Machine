@@ -12,8 +12,10 @@ from dataclasses import dataclass
 
 from . import opcodes as ops
 from .events import EndOfGame, Error, Text
+from .io import InputBuffer, Vocabulary
 from .memory import Memory
-from .strings import decode_text, read_custom_tables, zscii_to_char
+from .strings import (char_to_zscii, decode_text, encode_text, read_custom_tables,
+                      zscii_to_char)
 
 # ponytail: non-spec safety net so a bad story file can't hang a session;
 # raise only if a legitimate game trips it (a normal turn is far below this).
@@ -102,14 +104,32 @@ class VM:
         self.save_handler = None
         self.restore_handler = None
         self._init()
+        # dictionary vocabulary (static in the story file; fwords must be set
+        # first, hence after _init) — abbreviations inside entries need it
+        self.vocab = Vocabulary(self)
         self._handlers = self._build_handlers()
+
+    def _init_io_state(self):
+        """Input/output state; also reset by @restart via _init."""
+        self.pending = None          # (inst, operands, nops, pc_save) blocked read
+        self.input = InputBuffer(self.zscii_extra)
         # Output windows (text model, dfrotz -t parity): window 1 is the
-        # status line (buffered, flushed when the game switches back to 0);
-        # window 0 soft-wraps at the screen width.
+        # status line. The 80-col buffer is PERSISTENT (the game updates it
+        # in place); the line is emitted when its content changes, at the
+        # next main-window print or at the input seam.
         self._win = 0
         self._status = [" "] * 80
         self._status_col = 0
         self._status_dirty = False
+        self._status_shown = False
+        self._last_status = None
+        # dfrotz -t screen model (COMPRESSION_SPANS): main-window lines are
+        # buffered per line and flushed at each read; a bare `>` (the game's
+        # read prompt, written at column 0) as the last line is emitted
+        # without a newline so it merges into the next flush's first line
+        # (frotz dumb_show_prompt has no trailing newline).
+        self._lines = []
+        self._line = ""
         self._col = 0
         # Output stream 3 (ZSpec §7.1.2.1): captures text into a memory
         # table; nothing reaches the screen while selected.
@@ -147,6 +167,8 @@ class VM:
         self.frames = []
         self.catch_stack = []
         self.seed = self.seed0
+        self._seed_rng(0)
+        self._init_io_state()
 
     # ------------------------------------------------- operand plumbing
     def _pcgetb(self):
@@ -291,25 +313,40 @@ class VM:
         return key, ops_list[:nops], nops
 
     def run_until_input(self):
-        """Run until needs_input, done, or an unrecoverable error (INV2)."""
+        """Run until needs_input, done, or an unrecoverable error (INV2).
+
+        A read blocked on empty input is parked in self.pending (fully
+        decoded operands — the timer-routine call side effects of aread
+        must happen exactly once); feed() + run_until_input resumes it
+        without re-decoding."""
+        self.needs_input = False
         while not (self.done or self.needs_input):
             self.instrs += 1
             if self.instrs > INSTRUCTION_LIMIT:
                 self.events.append(Error("instruction limit exceeded"))
                 self.done = True
                 return
-            self.pc_save = self.pc
-            inst, operands, nops = self._decode()
-            if inst in (228, 246):  # @sread / @read_char: input seam (task 6)
-                self._flush_status()  # dfrotz -t reprints status at the prompt
-                self.needs_input = True
-                self.pc = self.pc_save
-                return
+            if self.pending is not None:
+                if self.input.empty:  # still nothing to read: keep parked
+                    self.needs_input = True
+                    return
+                inst, operands, nops, self.pc_save = self.pending
+                self.pending = None
+            else:
+                self.pc_save = self.pc
+                inst, operands, nops = self._decode()
+                if inst in (228, 246) and self.input.empty:
+                    self._before_read()
+                    self.pending = (inst, operands, nops, self.pc_save)
+                    self.needs_input = True
+                    return
             handler = self._handlers.get(inst)
             if inst < 0 or handler is None:
                 self.raise_err(ops.ERR_ILLEGAL_OPCODE)
                 continue
             handler(operands, nops)
+        if self.done:
+            self._flush_at_seam(final=True)
 
     # ------------------------------------------------- control flow
     def _predicate(self, p):
@@ -604,10 +641,16 @@ class VM:
         self.op_store(self._get_parent(o[0] & 0xFFFF))
 
     def op_get_sibling(self, o, n):
-        self.op_store(self._get_sibling(o[0] & 0xFFFF))
+        # 1OP:129 NEXT?: store result, then ?(label) branch if nonzero (ZSpec §14)
+        x = self._get_sibling(o[0] & 0xFFFF)
+        self.op_store(x)
+        self._predicate(x != 0)
 
     def op_get_child(self, o, n):
-        self.op_store(self._get_child(o[0] & 0xFFFF))
+        # 1OP:130 FIRST?: store result, then ?(label) branch if nonzero (ZSpec §14)
+        x = self._get_child(o[0] & 0xFFFF)
+        self.op_store(x)
+        self._predicate(x != 0)
 
     def op_get_prop_len(self, o, n):
         data = (o[0] & 0xFFFF) & 0xFFFF
@@ -685,7 +728,9 @@ class VM:
         self._do_call(o, n, False)
 
     def op_ret(self, o, n):
-        self._ret(self.fetch(o[0]))
+        # 1OP:139 ret value: the operand is variable-by-value (ZSpec §4.2.3) —
+        # o[0] is already the value (dork: ret(op0)); do NOT re-fetch.
+        self._ret(o[0])
 
     def op_ret_popped(self, o, n):
         # ZSpec: "pops top of stack and returns that" (equivalent to ret sp)
@@ -733,19 +778,37 @@ class VM:
         self.pc = f.return_pc
         self.op_store(value)
 
-    # ------------------------------------------------- RNG (ZSpec §14, plan)
+    # ------------------------------------------------- RNG (frotz 2.55 src/common/random.c)
+    # Startup/restart: seed_random(os seed) -> A = seed, standard mode.
+    # In-game `random -S`: 0 < S < 1000 -> special mode cycling 0..S-1;
+    # S >= 1000 -> A = S. Standard: A = 0x015a4e35*A + 1 (32-bit),
+    # result = (A >> 16) & 0x7fff; random K stores result % K + 1.
+    # (The old +1013904223 LCG diverged from frotz; seed 10 in planetfall
+    # routes the ambassador event differently.)
+    def _seed_rng(self, value):
+        if value == 0:
+            self._rng_a = self.seed0
+            self._rng_interval = 0
+        elif value < 1000:
+            self._rng_counter = 0
+            self._rng_interval = value
+        else:
+            self._rng_a = value & 0xFFFFFFFF
+            self._rng_interval = 0
+
     def op_random(self, o, n):
         k = o[0]
-        if k > 0:
-            self.seed = (1664525 * self.seed + 1013904223) & 0xFFFFFFFF
-            v = ((self.seed * k) >> 32) + 1
-        elif k < 0:
-            self.seed = (-k) & 0xFFFFFFFF
-            v = 0
+        if k <= 0:  # reseed (0 = interpreter os seed)
+            self._seed_rng(-k)
+            self.op_store(0)
+            return
+        if self._rng_interval:
+            r = self._rng_counter
+            self._rng_counter = (r + 1) % self._rng_interval
         else:
-            self.seed = int.from_bytes(os.urandom(4), "big")
-            v = 0
-        self.op_store(v)
+            self._rng_a = (0x015A4E35 * self._rng_a + 1) & 0xFFFFFFFF
+            r = (self._rng_a >> 16) & 0x7FFF
+        self.op_store(r % k + 1)
 
     # ------------------------------------------------- print family
     def _emit(self, s):
@@ -764,17 +827,229 @@ class VM:
                 self._status_col += 1
             self._status_dirty = True
             return
-        if self._status_dirty and any(c != " " for c in self._status):
-            self._flush_status()
+        # Main window: buffer lines; they flush at the next read (dfrotz -t
+        # screen model). A `>` at column 0 is the game's read prompt; it
+        # stays as line content (later text extends the same line, e.g.
+        # '>[I don't know ...]' or '> Deck Nine ...' when the status line
+        # merges in at the next seam).
         text, self._col = self._wrap(s, self._col)
-        if text:
-            self.events.append(Text(text))
+        for ch in text:
+            if ch == "\n":
+                self._lines.append(self._line)
+                self._line = ""
+            else:
+                self._line += ch
 
-    def _flush_status(self):
-        if self._status_dirty and any(c != " " for c in self._status):
-            self.events.append(Text("".join(self._status).rstrip() + "\n"))
-            self._status = [" "] * 80
-            self._status_dirty = False
+    def _status_line(self):
+        """The window-1 buffer rstripped if it changed since the last flush,
+        else None. The buffer is PERSISTENT (the game updates it in place),
+        so never clear it here; dfrotz -t omits unchanged re-prints."""
+        if not self._status_dirty:
+            return None
+        self._status_dirty = False
+        if not any(c != " " for c in self._status):
+            return None  # game cleared the line: nothing to show
+        line = "".join(self._status).rstrip()
+        if line == self._last_status:
+            return None
+        self._last_status = line
+        self._status_shown = True
+        return line
+
+    def _flush_at_seam(self, final=False):
+        """dfrotz -t flush at a read (or machine end): the status line (if
+        changed) first, then the main-window lines buffered since the last
+        flush, blank runs collapsed to one line. A bare `>` last line is
+        emitted without a newline (final=True forces the newline)."""
+        status = self._status_line()
+        lines = list(self._lines)
+        if self._line:
+            lines.append(self._line)
+        self._lines, self._line, self._col = [], "", 0
+        if status is not None:
+            lines = [status] + lines
+        out = []
+        for l in lines:
+            l = l.rstrip()
+            if not l and out and not out[-1]:
+                continue
+            out.append(l)
+        body, last = out[:-1], (out[-1] if out else None)
+        for l in body:
+            self.events.append(Text(l + "\n"))
+        if last is not None:
+            if last == ">" and not final:
+                self.events.append(Text(">"))  # merges with the next flush
+            else:
+                self.events.append(Text(last + "\n"))
+        if self.version < 4:
+            self._emit_v3_status()
+
+    def _before_read(self):
+        """Runs when the machine blocks on input (ZSpec §7.1.1.1, §8.2.4).
+        v3: the interpreter also draws the status line before every read."""
+        self._flush_at_seam()
+
+    def _emit_v3_status(self):
+        # ZSpec §8.2, format pinned against dfrotz's Zork I line 3
+        # (verified-facts): 56-col name field, then Score/Moves, clip 80.
+        # Globals: 16 = location object, 17 = moves, 18 = score.
+        obj = self._readvar(16)
+        name = ""
+        if obj:
+            pa = self._get_prop_addr(obj)
+            if pa:
+                name, _ = decode_text(self.mem, self.fwords, pa + 1,
+                                      self.zscii_extra, self.alphabet)
+        left = (" " + name).ljust(56)
+        if self.mem.getb(1) & 2:  # v3 flags1 bit 1: time game
+            right = f"Time: {self._readvar(17):02d}:{self._readvar(18):02d}"
+        else:
+            right = (f"Score: {self._readvar(18)}" + " " * 8
+                     + f"Moves: {self._readvar(17)}")
+        self.events.append(Text((left + right)[:80] + "\n"))
+
+    # ------------------------------------------------- input / read family
+    def feed(self, line):
+        """Feed one input line (encoded ZSCII + 13). dfrotz -t does not
+        echo piped input, so no echo events are modelled."""
+        self.input.feed(line)
+
+    def _consume_line(self):
+        """Drain input up to (not including) the CR; lowercase it
+        (ZSpec: v1-4 explicit; dork lowercases all versions). The seam
+        guarantees a CR is present (feed always appends one)."""
+        out = []
+        while True:
+            c = self.input.get()
+            if c in (0, 13):
+                break
+            out.append(c + 32 if 65 <= c <= 90 else c)
+        return out
+
+    def op_read(self, o, n):
+        # VAR:228: v3 sread text parse (no store); v5 aread text parse
+        # time routine -> (result). Timers are unsupported: the v4+
+        # time/routine operands were evaluated at decode time (their call
+        # side effects happen exactly once — that is why the pending tuple
+        # stores decoded operands), and a read never times out, so the
+        # v5 result is always 10 (ZSpec author-recommended terminator),
+        # never the routine's.
+        t1 = o[0] & 0xFFFF
+        t2 = o[1] & 0xFFFF
+        codes = self._consume_line()
+        if self.version >= 5:
+            # byte0 = max chars; byte1 = count written; chars at byte2..
+            # Leftover rule: byte1 > 0 on entry = chars left from an
+            # interrupted previous input; new chars go after them.
+            maxn = self.mem.getb(t1)
+            left = min(self.mem.getb(t1 + 1), maxn)
+            new = codes[:maxn - left]
+            for i, c in enumerate(new):
+                self.mem.putb(t1 + 2 + left + i, c)
+            self.mem.putb(t1 + 1, left + len(new))
+            self._tokenise(t1, t2)
+            self.op_store(10)
+        else:
+            # v1-4: byte0 = max-1 preset; chars at byte1.., 0-terminated
+            maxn = self.mem.getb(t1)
+            end = 1
+            while end <= maxn and self.mem.getb(t1 + end) != 0:
+                end += 1
+            left = end - 1
+            new = codes[:maxn - left]
+            for j, c in enumerate(new):
+                self.mem.putb(t1 + 1 + left + j, c)
+            self.mem.putb(t1 + 1 + left + len(new), 0)
+            self._tokenise(t1, t2)
+
+    def op_read_char(self, o, n):
+        # VAR:246: one keypress -> its ZSCII code (13 = CR). o[0] must be
+        # 1 (keyboard); v4+ o[1], o[2] = timer (unsupported; evaluated at
+        # decode time like aread's).
+        self.op_store(self.input.get())
+
+    def _tokenise(self, t1, t2):
+        """Lexical analysis of the text buffer -> parse table (ZSpec
+        §13.6, dork handleInput). Entry layout: {dict-addr u16, len u8,
+        text-buffer-offset u8}; t2 = 0 skips it (v5+)."""
+        if t2 == 0:
+            return
+        if self.version >= 5:
+            cnt = self.mem.getb(t1 + 1)
+            buf = bytes(self.mem.getb(t1 + 2 + i) for i in range(cnt))
+            off0 = 2
+        else:
+            maxn = self.mem.getb(t1)
+            end = 1
+            while end <= maxn and self.mem.getb(t1 + end) != 0:
+                end += 1
+            buf = bytes(self.mem.getb(t1 + k) for k in range(1, end))
+            off0 = 1
+        s = "".join(zscii_to_char(c) for c in buf)
+        maxw = self.mem.getb(t2)
+        entries = []
+        for off, word in self.vocab.split(s):
+            if len(entries) >= maxw:
+                break  # ZSpec: stop before going beyond the max words
+            entries.append((self.vocab.lookup(word), len(word), off0 + off))
+        self.mem.putb(t2 + 1, len(entries))
+        for i, (addr, ln, off) in enumerate(entries):
+            self.mem.putw(t2 + 2 + 4 * i, addr)
+            self.mem.putb(t2 + 4 + 4 * i, ln)
+            self.mem.putb(t2 + 5 + 4 * i, off)
+
+    def op_scan_table(self, o, n):
+        # VAR:247: scan the table for x; store the found address (or 0) and
+        # branch if found. v5+ form: bit 7 = word scan, low 7 bits = entry
+        # size (0 = 128); the 3-operand form defaults to word scan size 2
+        # (dork case 247).
+        x = o[0] & 0xFFFF
+        table = o[1] & 0xFFFF
+        count = max(0, o[2])
+        form = o[3] & 0xFF if n > 3 else 0x82
+        is_word = bool(form & 0x80)
+        size = (form & 0x7F) or 128
+        found, a = 0, table
+        for _ in range(count):
+            v = self.mem.getw(a) if is_word else self.mem.getb(a)
+            if v == x:
+                found = a
+                break
+            a = (a + size) & 0xFFFF
+        self.op_store(found)
+        self._predicate(found != 0)
+
+    def op_tokenise(self, o, n):
+        # VAR:251: re-parse the existing text buffer (no new input).
+        # The user-dictionary operand and flag (keep unknown slots) are
+        # unsupported — dork ignores both as well.
+        self._tokenise(o[0] & 0xFFFF, o[1] & 0xFFFF)
+
+    def op_encode_text(self, o, n):
+        # VAR:252 (v5+): zscii-text length from coded-text. NOT a store
+        # instruction (ZSpec §14 table has no "-> (result)").
+        t, length, frm, dst = (o[0] & 0xFFFF, o[1], o[2] & 0xFFFF,
+                               o[3] & 0xFFFF)
+        if length <= 0:
+            return
+        end = min(t + frm + length, len(self.mem.mem))
+        s = "".join(zscii_to_char(self.mem.getb(k)) for k in range(t + frm, end))
+        out = encode_text(s, self.mem, self.version)
+        for i, b in enumerate(out):
+            self.mem.putb(dst + i, b)
+
+    def op_show_status(self, o, n):
+        # 0OP:188 show_status: v3 only; v5+ treats it as nop (Wishbringer
+        # v5 rel 23 contains it by accident — ZSpec note).
+        if self.version < 4:
+            self._emit_v3_status()
+
+    def op_input_stream(self, o, n):
+        # VAR:244: dork is a no-op (keyboard only). Non-zero input streams
+        # are not modelled (the spec suggests error 587; the reference
+        # interpreter in our oracle corpus just ignores them).
+        pass
 
     def _wrap(self, s, col):
         """Soft-wrap at the screen width, word-boundary preferred (frotz -t).
@@ -992,14 +1267,16 @@ class VM:
             189: self.op_verify, 191: self.op_piracy,
             # VAR
             224: self.op_call_vs, 225: self.op_storew, 226: self.op_storeb,
-            229: self.op_print_char, 230: self.op_print_num,
+            228: self.op_read, 229: self.op_print_char, 230: self.op_print_num,
             231: self.op_random, 232: self.op_push, 233: self.op_pull,
             234: self._noop, 235: self.op_set_window, 236: self.op_call_vs2,
             237: self._noop, 238: self._noop, 239: self.op_set_cursor,
             240: self.op_get_cursor,
             241: self._noop, 242: self._noop, 243: self.op_output_stream,
-            244: self._noop, 245: self._noop,
+            244: self.op_input_stream, 245: self._noop,
+            246: self.op_read_char, 247: self.op_scan_table,
             249: self.op_call_vn, 250: self.op_call_vn2,
+            251: self.op_tokenise, 252: self.op_encode_text,
             255: self.op_check_arg_count,
             # EXT
             ops.EXT_BASE + 0: self.op_save_v5,
@@ -1014,10 +1291,11 @@ class VM:
             H[181] = self.op_save_v3
             H[182] = self.op_restore_v3
             H[185] = self.op_pull  # pop: pull top, discard
-            H[188] = self._noop    # show_status: task 6 (v3 status line)
+            H[188] = self.op_show_status  # v3 interpreter-drawn status line
         else:
             H[143] = self.op_call_1n
             H[185] = self.op_catch
+            H[188] = self._noop  # show_status illegal in v5+; nop per ZSpec
             H[248] = self.op_not
             H[254] = self.op_print_table
             H[265] = self.op_save_undo

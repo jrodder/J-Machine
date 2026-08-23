@@ -66,7 +66,8 @@ def char_to_zscii(ch, extra=DEFAULT_ZSCII_EXTRA):
     return o
 
 
-def decode_text(mem, fwords, addr, extra=DEFAULT_ZSCII_EXTRA, alpha=None, wide=False):
+def decode_text(mem, fwords, addr, extra=DEFAULT_ZSCII_EXTRA, alpha=None, wide=False,
+                max_bytes=None):
     if wide:
         return decode_wide(mem, addr, extra)
     out = []
@@ -74,6 +75,8 @@ def decode_text(mem, fwords, addr, extra=DEFAULT_ZSCII_EXTRA, alpha=None, wide=F
     # ponytail: cap at the memory edge — a malformed/stray print must not spin
     # on zero-filled memory appending spaces forever (OOM'd a desktop once).
     limit = len(mem.mem)
+    if max_bytes is not None:
+        limit = min(limit, addr + max_bytes)
     while addr < limit:
         w = mem.getw(addr)
         addr += 2
