@@ -90,7 +90,7 @@ Words are 16-bit big-endian: **c1 = (w>>10)&31, c2 = (w>>5)&31, c3 = w&31, end =
 - else → alphabet table `[ts*26 + v - 6]`, then `ts = ps`
 
 Default tables (ZSCII output codes): A0: z-char 0 = space, 1-3 = abbreviations, 4/5 = shift, **6-31 = `a`-`z`** (digits are NOT in A0); A1: 6-31 = `A`-`Z`; A2: 6 = escape (10-bit ZSCII start), 7 = ZSCII 13 (newline), **8-17 = `0`-`9`**, 18=`.`, 19=`,`, 20=`!`, 21=`?`, 22=`_`, 23=`#`, 24=`'` (0x27), 25=`"` (0x22), 26=`/`, 27=`\`, 28=`-`, 29=`:`, 30=`(`, 31=`)`. (Use dork's `ALPHABET` string constant verbatim: `'abcdefghijklmnopqrstuvwxyz' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' + '*\n0123456789.,!?_#\'"/\\-:()'` indexed by `ts*26 + v - 6`.)
-ZSCII→char: 13 → `\n`, 0 → `''`, 1..154 → `chr(code)`, 155..251 → custom table (header ext word 3) else default table (dork `DEFAULT_ZSCII_EXTRA`, 69 chars for 155..223). v5+ custom alphabet: 78 bytes at header 0x34 (3×26 ZSCII values for A0/A1/A2 z-chars 6..31; A2 z-chars 6,7 keep escape/newline meaning).
+ZSCII→char: 13 → `\n`, 0 → `''`, 1..154 → `chr(code)`, 155..251 → custom table (header ext word 3) else default table (dork `DEFAULT_ZSCII_EXTRA`, 69 chars for 155..223). char→ZSCII: <0xA0 identity; `\n`→13; else **scan the custom table for the char** and return 155+index — the codepoint is NOT the ZSCII code (the default table is not an identity map: 'ä' U+00E4 is ZSCII 155). v5+ custom alphabet: 78 bytes at header 0x34 (3×26 ZSCII values for A0/A1/A2 z-chars 6..31; A2 z-chars 6,7 keep escape/newline meaning).
 
 ### Dictionary (verified against zork1.z3 live: dict 0x3b21, n_sep=3, entry_len=7, count=697 — ends exactly at highmem 0x4e37)
 Header at dictionary address: `n` bytes (n = first byte) of word-separator ZSCII codes, 1 byte entry length, 1 word count. Entries follow, **sorted** by encoded text as a big integer (binary search). v3: 4 text bytes (6 z-chars, pad 5) + (entry_len−4) data bytes. v5+: 6 text bytes (9 z-chars) + (entry_len−6) data bytes.
@@ -731,6 +731,33 @@ class TestStrings(unittest.TestCase):
             else:
                 hi = mid - 1
         self.assertTrue(found, "'open' must be in Zork I's dictionary")
+
+    def test_encode_incomplete_construction(self):
+        sf, m = load("zork1.z3")
+        extra, _ = read_custom_tables(sf)
+        # v3: 6 z-chars; a digit at slot 6 leaves no room for the 2-char A2
+        # construction -> shift-only, 4 bytes total, decodes back to "aaaaa"
+        b = encode_text("aaaaa0", m, 3)
+        self.assertEqual(len(b), 4)
+        off = 0x8000
+        m.mem[off:off + len(b)] = b
+        text, _ = decode_text(m, sf.header.fwords, off, extra, None)
+        self.assertEqual(text, "aaaaa")
+        # v5: 9 z-chars; 8 letters + a digit -> 6 bytes, decodes to 8 letters
+        sf5, m5 = load("planetfall.z5")
+        extra5, _ = read_custom_tables(sf5)
+        b5 = encode_text("aaaaaaaa8", m5, 5)
+        self.assertEqual(len(b5), 6)
+        m5.mem[off:off + len(b5)] = b5
+        text5, _ = decode_text(m5, sf5.header.fwords, off, extra5, None)
+        self.assertEqual(text5, "aaaaaaaa")
+
+    def test_char_to_zscii(self):
+        from zmach.strings import char_to_zscii
+        self.assertEqual(char_to_zscii("\n"), 13)
+        self.assertEqual(char_to_zscii("a"), ord("a"))
+        self.assertEqual(char_to_zscii("ä"), 155)   # default table is not identity
+        self.assertEqual(char_to_zscii("ß"), 161)
 ```
 
 - [ ] **Step 2: Run, verify FAIL** (`ModuleNotFoundError: zmach.strings`)
@@ -799,10 +826,11 @@ def char_to_zscii(ch, extra=DEFAULT_ZSCII_EXTRA):
     o = ord(ch)
     if o < 0xA0:
         return o
-    if _EXTRA_MIN <= o <= _EXTRA_MAX:
-        i = o - _EXTRA_MIN
-        if i < len(extra) and extra[i] == ch:
-            return o
+    # the extra table is NOT an identity map (codepoint != ZSCII code):
+    # scan it (dork charToZscii semantics)
+    for i, c in enumerate(extra):
+        if c == ch:
+            return _EXTRA_MIN + i
     return o
 
 
@@ -882,9 +910,15 @@ def encode_text(s, mem, version):
             zc.append(6 + (ord(ch) - 97 if ch.islower() else ord(ch) - 65))
             i += 1
         elif ch in A2_ENC and A2_ENC.index(ch) >= 2:   # 0='^' escape, 1=\n: unencodable
-            zc.append(5)                 # shift to A2
-            zc.append(6 + A2_ENC.index(ch))
-            i += 1
+            if len(zc) + 2 <= n:
+                zc.append(5)                 # shift to A2
+                zc.append(6 + A2_ENC.index(ch))
+                i += 1
+            else:
+                # no room for the 2-char construction: leave it incomplete
+                # (shift only) rather than overflow (ZSpec §3.7)
+                zc.append(5)
+                break
         else:                            # unmappable -> stop (pad)
             break
     zc += [5] * (n - len(zc))            # pad char 5, incomplete constructions OK
