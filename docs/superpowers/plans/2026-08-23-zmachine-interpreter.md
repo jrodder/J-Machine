@@ -18,6 +18,7 @@
 - No Reticulum import anywhere in Phase 1.
 - v8 movie/stream opcodes: no-op stubs; undo opcode: reports unsupported.
 - All commits via `git commit`; one commit per task (plus the task's tests).
+- **All source files end with a trailing newline (POSIX)** — every task.
 - Reference material (committed in Task 0, authoritative): `references/zspec10.txt` (ZSpec 1.0 full text), `references/zspec11.txt` (ZSpec 1.1 addendum), `references/dork/machine.ts`, `references/dork/text.ts`, `references/dork/vocab.ts`, `references/dork/io.ts` (conformance-tested TypeScript interpreter — structural reference for anything not fully specified here).
 - **When in doubt:** (1) check `references/`, (2) run the dfrotz oracle (one command), (3) ask. Never guess at byte layouts.
 - Every opcode group has a gate: a specific suite pass or a byte-exact dfrotz transcript comparison. The gates, not vibes, define done.
@@ -93,7 +94,7 @@ ZSCII→char: 13 → `\n`, 0 → `''`, 1..154 → `chr(code)`, 155..251 → cust
 
 ### Dictionary (verified against zork1.z3 live: dict 0x3b21, n_sep=3, entry_len=7, count=519)
 Header at dictionary address: `n` bytes (n = first byte) of word-separator ZSCII codes, 1 byte entry length, 1 word count. Entries follow, **sorted** by encoded text as a big integer (binary search). v3: 4 text bytes (6 z-chars, pad 5) + (entry_len−4) data bytes. v5+: 6 text bytes (9 z-chars) + (entry_len−6) data bytes.
-Encoding typed text for lookup: lowercase, no abbreviations, pad 5, 6 z-chars (v3) or 9 (v5+), multi-zchar constructions left incomplete if no room (ZSpec §3.7; e.g. "i" → `$94a5` in v3 form).
+Encoding typed text for lookup: lowercase, no abbreviations, pad 5, 6 z-chars (v3) or 9 (v5+), multi-zchar constructions left incomplete if no room (ZSpec §3.7). "i" v5 form = `$38a5 $14a5 $94a5` (the $48a5 in ZSpec 1.0's §3.7 example is a typo — it decodes to "jr…"). **Empirically verified: 664/664 pure-alphabetic words in planetfall.z5's Inform-6-compiled dictionary match this encoder's output byte-exactly.** Abbrev-table entries are WORD ADDRESSES (byte addr ÷ 2), always ×2 regardless of version (ZSpec §1.2.2: "Word addresses are used only in the abbreviations table") — NOT the version's packed multiplier.
 
 ### v3 status line (verified: dfrotz byte capture + dork)
 Format, 80 columns + `\n`: `f" {name}".ljust(56) + f"Score: {score}" + " "*8 + f"Moves: {moves}"`, clipped to 80 cols (name field minimum 1 trailing space). Emitted: by `show_status`, and automatically before `read`/`read_char` in v3 (v3 games rely on it). dfrotz line 3 of Zork I is exactly: `" West of House"` + 42 spaces + `"Score: 0"` + 8 spaces + `"Moves: 0"`.
@@ -760,18 +761,21 @@ def read_custom_tables(story):
         ext_len = _w(data, h.header_ext_addr)
         if ext_len >= 3:
             taddr = _w(data, h.header_ext_addr + 2 * 3)
-            if taddr:
+            if 0 < taddr < len(data):
                 n = data[taddr]
                 out = []
                 for i in range(min(n, _EXTRA_MAX - _EXTRA_MIN + 1)):
                     out.append(chr(_w(data, taddr + 1 + i * 2)))
-                extra = "".join(out).ljust(len(DEFAULT_ZSCII_EXTRA), "\x00")
+                # custom table overrides 155..155+N-1; the rest keeps defaults
+                extra = "".join(out) + DEFAULT_ZSCII_EXTRA[len(out):]
     alpha = data[h.alphabet_addr:h.alphabet_addr + 78] if h.alphabet_addr else None
     return extra, (alpha if alpha is None or len(alpha) == 78 else None)
 
 
 def _w(data, a):
-    return data[a] | data[a + 1] << 8
+    if a + 2 > len(data):
+        return 0
+    return (data[a] << 8) | data[a + 1]
 
 
 def zscii_to_char(code, extra=DEFAULT_ZSCII_EXTRA):
@@ -875,7 +879,7 @@ def encode_text(s, mem, version):
         if ch.isalpha() and ch.isascii():
             zc.append(6 + (ord(ch) - 97 if ch.islower() else ord(ch) - 65))
             i += 1
-        elif ch in A2_ENC and ch not in "^\\n":
+        elif ch in A2_ENC and A2_ENC.index(ch) >= 2:   # 0='^' escape, 1=\n: unencodable
             zc.append(5)                 # shift to A2
             zc.append(6 + A2_ENC.index(ch))
             i += 1
