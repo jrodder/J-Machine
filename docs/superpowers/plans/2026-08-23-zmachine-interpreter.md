@@ -529,7 +529,7 @@ class TestMemory(unittest.TestCase):
 
     def test_story_copied(self):
         self.assertEqual(self.m.mem[0], 3)
-        self.assertEqual(self.m.getw(0x12) & 0xffff, ord("8") | ord("4") << 8)
+        self.assertEqual(self.m.getw(0x12), ord("8") << 8 | ord("4"))  # serial "84…" BE
 
     def test_oob(self):
         self.assertEqual(self.m.getb(524288), 0)
@@ -555,6 +555,20 @@ class TestMemory(unittest.TestCase):
         self.m.putw(0x100, 0xDEAD)
         self.m.reset()
         self.assertEqual(self.m.getw(0x100), 0)
+
+    def test_byte_swapped(self):
+        import types
+        class FakeHeader:
+            version, flags1, declared_len = 3, 1, 16
+        class FakeStory:
+            header = FakeHeader()
+            data = bytes(16)
+            def memory_size(self): return 512
+        m = Memory(FakeStory())
+        self.assertTrue(m.byte_swapped)
+        m.putw(0, 0x1234)
+        self.assertEqual((m.mem[0], m.mem[1]), (0x34, 0x12))  # low byte first
+        self.assertEqual(m.getw(0), 0x1234)
 ```
 
 - [ ] **Step 2: Run, verify FAIL** (`ModuleNotFoundError: zmach.memory`)
@@ -591,19 +605,17 @@ class Memory:
             self.mem[a] = v & 0xFF
 
     def getw(self, a):
-        hi, lo = self.getb(a), self.getb(a + 1)
-        if self.byte_swapped:
-            return lo | hi << 8
-        return hi << 8 | lo
+        b0, b1 = self.getb(a), self.getb(a + 1)
+        return (b1 << 8 | b0) if self.byte_swapped else (b0 << 8 | b1)
 
     def putw(self, a, v):
         v &= 0xFFFF
         if self.byte_swapped:
-            lo, hi = v & 0xFF, v >> 8
+            self.putb(a, v & 0xFF)
+            self.putb(a + 1, v >> 8)
         else:
-            hi, lo = v >> 8, v & 0xFF
-        self.putb(a, hi)
-        self.putb(a + 1, lo)
+            self.putb(a, v >> 8)
+            self.putb(a + 1, v & 0xFF)
 
     def getu64(self, a):
         v = 0
