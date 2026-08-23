@@ -301,6 +301,7 @@ class VM:
             self.pc_save = self.pc
             inst, operands, nops = self._decode()
             if inst in (228, 246):  # @sread / @read_char: input seam (task 6)
+                self._flush_status()  # dfrotz -t reprints status at the prompt
                 self.needs_input = True
                 self.pc = self.pc_save
                 return
@@ -445,10 +446,12 @@ class VM:
         self.xstore(o[0], self._pop())
 
     def op_inc(self, o, n):
-        self._putvar(o[0], self.trunc(self.xfetch(o[0]) + 1))
+        # operand 0 = top of stack, in place (ZSpec §4.2.2); xstore covers
+        # stack/locals/globals like op_pull
+        self.xstore(o[0], self.trunc(self.xfetch(o[0]) + 1))
 
     def op_dec(self, o, n):
-        self._putvar(o[0], self.trunc(self.xfetch(o[0]) - 1))
+        self.xstore(o[0], self.trunc(self.xfetch(o[0]) - 1))
 
     def op_load(self, o, n):
         self.op_store(self.xfetch(o[0]))
@@ -608,6 +611,9 @@ class VM:
 
     def op_get_prop_len(self, o, n):
         data = (o[0] & 0xFFFF) & 0xFFFF
+        if data == 0:
+            self.op_store(0)  # Z-Machine 1.1 / Praxix: get_prop_len 0 = 0
+            return
         b1 = self.mem.getb(data - 1)
         if self.version == 3:
             self.op_store((b1 >> 5) + 1)
@@ -759,12 +765,16 @@ class VM:
             self._status_dirty = True
             return
         if self._status_dirty and any(c != " " for c in self._status):
-            self.events.append(Text("".join(self._status).rstrip() + "\n"))
-            self._status = [" "] * 80
-            self._status_dirty = False
+            self._flush_status()
         text, self._col = self._wrap(s, self._col)
         if text:
             self.events.append(Text(text))
+
+    def _flush_status(self):
+        if self._status_dirty and any(c != " " for c in self._status):
+            self.events.append(Text("".join(self._status).rstrip() + "\n"))
+            self._status = [" "] * 80
+            self._status_dirty = False
 
     def _wrap(self, s, col):
         """Soft-wrap at the screen width, word-boundary preferred (frotz -t).
@@ -779,7 +789,9 @@ class VM:
                 i += 1
                 continue
             if ch == " ":
-                cur.append(ch); col += 1
+                # a space landing past the line end is dropped (frotz -t)
+                if col < width:
+                    cur.append(ch); col += 1
                 i += 1
                 continue
             j = i
@@ -895,13 +907,15 @@ class VM:
         return s
 
     def op_get_cursor(self, o, n):
-        a = (o[0] & 0xFFFF) * self.pack_mult
+        # VAR:240 get_cursor line column [window(v6)]: v4/v5 takes a plain
+        # memory address (dork semantics; no packing)
+        a = o[0] & 0xFFFF
         self.mem.putw(a, 0)
         self.mem.putw(a + 2, 0)
 
     def op_set_font(self, o, n):
-        # Text mode: only font 1 is available
-        self.op_store(1 if o[0] == 1 else 0)
+        # Text mode: only font 1 is available (dork: op0 0/1 -> 1, else 0)
+        self.op_store(1 if (o[0] & 0xFFFF) in (0, 1) else 0)
 
     def op_save_undo(self, o, n):
         self.op_store(-1)
