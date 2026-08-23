@@ -71,7 +71,10 @@ def decode_text(mem, fwords, addr, extra=DEFAULT_ZSCII_EXTRA, alpha=None, wide=F
         return decode_wide(mem, addr, extra)
     out = []
     ts = ps = y = 0
-    while True:
+    # ponytail: cap at the memory edge — a malformed/stray print must not spin
+    # on zero-filled memory appending spaces forever (OOM'd a desktop once).
+    limit = len(mem.mem)
+    while addr < limit:
         w = mem.getw(addr)
         addr += 2
         for v in ((w >> 10) & 31, (w >> 5) & 31, w & 31):
@@ -114,7 +117,8 @@ def decode_text(mem, fwords, addr, extra=DEFAULT_ZSCII_EXTRA, alpha=None, wide=F
 
 def decode_wide(mem, addr, extra=DEFAULT_ZSCII_EXTRA):
     out = []
-    while True:
+    limit = len(mem.mem)  # same OOM cap as decode_text
+    while addr < limit:
         w = mem.getw(addr)
         addr += 2
         if w == 0:
