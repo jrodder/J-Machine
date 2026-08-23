@@ -33,6 +33,7 @@ class TestStoryFile(unittest.TestCase):
         f = StoryFile.load(C / "risorg.z8")
         self.assertEqual(f.header.version, 8)
         self.assertEqual(f.header.declared_len, 0xd86d * 8)
+        self.assertEqual(f.header.term_chars_addr, 0xb4d6)   # 0x2E, v5+ field
 
     def test_unsupported_version(self):
         data = bytearray((C / "planetfall.z5").read_bytes())
@@ -42,13 +43,19 @@ class TestStoryFile(unittest.TestCase):
         try:
             with self.assertRaises(StoryFileError) as cm:
                 StoryFile.load(p)
-            self.assertIn("6", str(cm.exception))
+            self.assertIn("version 6", str(cm.exception))
         finally:
             p.unlink()
 
-    def test_checksum_mismatch_warns_not_raises(self):
-        f = StoryFile.load(C / "zork1.z3", strict=False)   # must not raise
-        self.assertEqual(f.sha256, __import__("hashlib").sha256(f.data).digest())
+    def test_checksum_mismatch(self):
+        import tempfile
+        raw = bytearray((C / "zork1.z3").read_bytes()[:84876])
+        raw[0x50] ^= 0xFF   # corrupt one byte inside the checksum range
+        p = Path(tempfile.mkdtemp()) / "corrupt.z3"
+        p.write_bytes(bytes(raw))
+        StoryFile.load(p, strict=False)          # must not raise
+        with self.assertRaises(StoryFileError):
+            StoryFile.load(p, strict=True)
 
 
 if __name__ == "__main__":

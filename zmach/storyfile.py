@@ -37,6 +37,7 @@ class StoryHeader:
     font_h_units: int = 0
     def_bg: int = 0
     def_fg: int = 0
+    term_chars_addr: int = 0
     std_rev: int = 0
     alphabet_addr: int = 0
     header_ext_addr: int = 0
@@ -85,6 +86,7 @@ class StoryFile:
             h.screen_w_units, h.screen_h_units = w(0x22), w(0x24)
             h.font_w_units, h.font_h_units = raw[0x26], raw[0x27]
             h.def_bg, h.def_fg = raw[0x2c], raw[0x2d]
+            h.term_chars_addr = w(0x2e)
             h.std_rev = raw[0x32]
             h.alphabet_addr, h.header_ext_addr = w(0x34), w(0x36)
         h.length_divisor = d
