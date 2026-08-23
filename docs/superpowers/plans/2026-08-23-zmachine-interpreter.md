@@ -41,7 +41,7 @@
 | 18-23 | serial number, 6 ASCII chars (traditional slot, NOT a spec field) | "840726" |
 | 24-25 | abbreviations (fwords) table address | 0x01f0 |
 | 26-27 | file length: declared bytes ÷2 (v3) / ÷4 (v5) / ÷8 (v8). **Files may contain padding beyond declared length; exclude it from the checksum** (ZSpec 1.1) | 0xa5c6 → 84876 of 92160 |
-| 28-29 | checksum: sum of all 2-byte words over bytes[0:declared_len], **excluding the length word (26-27) and checksum word (28-29)** | 0xa129 |
+| 28-29 | checksum: sum of **every byte from offset 0x40 to declared_len**, mod 0x10000 (ZSpec §15 `verify` opcode). Padding past declared_len is excluded — zork1.z3's 7284 padding bytes are non-zero | 0xa129 |
 | 30 | interpreter number (set 0 on load, v5+) | — |
 | 31 | interpreter version (set 0 on load, v5+) | — |
 | 32 | screen height lines (v5+, set 25) | — |
@@ -50,6 +50,7 @@
 | 36-37 | screen height in units (v5+, set 25) | — |
 | 38-39 | font width/height in units (v5+, set 1/1) | — |
 | 44-45 | default bg/fg colour (v5+, set 9/2) | — |
+| 46-47 (0x2E-0x2F) | address of terminating characters table (v5+; bytes: word0 = max−1, then char codes; 0 = none → newline only terminates) | — |
 | 50-51 (0x32) | standard revision (write 0x01 0x01) | — |
 | 52-53 (0x34) | custom alphabet table address (v5+, 78 bytes) or 0 | 0 |
 | 54-55 (0x36) | header extension table address (v5+) or 0; word 3 of that table = custom ZSCII 155..251 translation (97 × 2-byte words) | 0 |
@@ -241,8 +242,10 @@ class TestEvents(unittest.TestCase):
         self.assertEqual(EndOfGame(3).status, 3)
 
     def test_exceptions(self):
-        self.assertRaises(StoryFileError, StoryFileError, "bad story")
-        self.assertRaises(SaveFileError, SaveFileError, "bad save")
+        with self.assertRaises(StoryFileError):
+            raise StoryFileError("bad story")
+        with self.assertRaises(SaveFileError):
+            raise SaveFileError("bad save")
 ```
 
 - [ ] **Step 2: Run, verify FAIL** (`ModuleNotFoundError: zmach.events`)
@@ -309,7 +312,7 @@ Run: `python3 -m unittest tests.test_events -v`
 **Interfaces:**
 - Consumes: `StoryFileError` (Task 1)
 - Produces:
-  - `@dataclass StoryHeader`: `version, flags1, release, highmem, pc, dictionary, objects, globals_base, static_base, flags2, serial, fwords, declared_len, checksum, interp_num, interp_ver, screen_h, screen_w, screen_w_units, screen_h_units, font_w_units, font_h_units, def_bg, def_fg, std_rev, alphabet_addr, header_ext_addr, length_divisor` (int/str; v3 fields that don't exist in the header are 0).
+  - `@dataclass StoryHeader`: `version, flags1, release, highmem, pc, dictionary, objects, globals_base, static_base, flags2, serial, fwords, declared_len, checksum, interp_num, interp_ver, screen_h, screen_w, screen_w_units, screen_h_units, font_w_units, font_h_units, def_bg, def_fg, term_chars_addr, std_rev, alphabet_addr, header_ext_addr, length_divisor` (int/str; v3 fields that don't exist in the header are 0).
   - `StoryFile.load(path, strict=False) -> "StoryFile"` with attributes `data: bytes` (file bytes up to declared_len), `header: StoryHeader`, `sha256: bytes`, `path: str`, `name: str` (filename stem). Raises `StoryFileError` for version not in {3,5,8} (message includes detected version) and, when `strict`, for checksum mismatch.
   - `StoryFile.memory_size() -> int` = 524288 (uniform 512 KB image, spec §7).
 
@@ -334,12 +337,10 @@ class TestStoryFile(unittest.TestCase):
         self.assertEqual(h.declared_len, 0xa5c6 * 2)          # 84876 < file size 92160
         self.assertEqual(len(f.data), h.declared_len)          # padding excluded
         self.assertEqual(h.checksum, 0xa129)
-        # checksum rule: sum of words over declared bytes, minus len+checksum words
-        total = 0
-        for i in range(0, h.declared_len, 2):
-            if i in (0x1a, 0x1c):
-                continue
-            total = (total + (f.data[i] | f.data[i+1] << 8)) & 0xffff
+        # checksum rule (ZSpec §15 verify): sum of every byte from 0x40 to
+        # declared_len, mod 0x10000 — zork1's padding past declared_len is
+        # non-zero, so the sum must stop at declared_len
+        total = sum(f.data[0x40:h.declared_len]) & 0xffff
         self.assertEqual(total, h.checksum)
 
     def test_planetfall_v5_exact_len(self):
@@ -353,20 +354,29 @@ class TestStoryFile(unittest.TestCase):
         f = StoryFile.load(C / "risorg.z8")
         self.assertEqual(f.header.version, 8)
         self.assertEqual(f.header.declared_len, 0xd86d * 8)
+        self.assertEqual(f.header.term_chars_addr, 0xb4d6)   # 0x2E, v5+ field
 
     def test_unsupported_version(self):
         data = bytearray((C / "planetfall.z5").read_bytes())
         data[0] = 6
         p = C.parent / "bad.z6"
         p.write_bytes(bytes(data))
-        with self.assertRaises(StoryFileError) as cm:
-            StoryFile.load(p)
-        self.assertIn("6", str(cm.exception))
-        p.unlink()
+        try:
+            with self.assertRaises(StoryFileError) as cm:
+                StoryFile.load(p)
+            self.assertIn("version 6", str(cm.exception))
+        finally:
+            p.unlink()
 
-    def test_checksum_mismatch_warns_not_raises(self):
-        f = StoryFile.load(C / "zork1.z3", strict=False)   # must not raise
-        self.assertEqual(f.sha256, __import__("hashlib").sha256(f.data).digest())
+    def test_checksum_mismatch(self):
+        import tempfile
+        raw = bytearray((C / "zork1.z3").read_bytes()[:84876])
+        raw[0x50] ^= 0xFF   # corrupt one byte inside the checksum range
+        p = Path(tempfile.mkdtemp()) / "corrupt.z3"
+        p.write_bytes(bytes(raw))
+        StoryFile.load(p, strict=False)          # must not raise
+        with self.assertRaises(StoryFileError):
+            StoryFile.load(p, strict=True)
 ```
 
 - [ ] **Step 2: Run, verify FAIL** (`ModuleNotFoundError: zmach.storyfile`)
@@ -416,6 +426,7 @@ class StoryHeader:
     font_h_units: int = 0
     def_bg: int = 0
     def_fg: int = 0
+    term_chars_addr: int = 0
     std_rev: int = 0
     alphabet_addr: int = 0
     header_ext_addr: int = 0
@@ -439,17 +450,13 @@ class StoryFile:
         if ver not in SUPPORTED:
             raise StoryFileError(f"unsupported z-machine version {ver} in {path}")
         d = LENGTH_DIVISOR[ver]
-        w = lambda o: raw[o] | raw[o + 1] << 8          # big-endian word
+        w = lambda o: (raw[o] << 8) | raw[o + 1]              # big-endian word
         declared = w(0x1a) * d
         if declared > len(raw):
             raise StoryFileError(f"declared length {declared} exceeds file size {len(raw)}")
         data = raw[:declared]
-        # checksum over declared bytes, excluding len (0x1a) and checksum (0x1c) words
-        total = 0
-        for i in range(0, declared, 2):
-            if i in (0x1a, 0x1c):
-                continue
-            total = (total + (data[i] | data[i + 1] << 8)) & 0xffff
+        # checksum (ZSpec §15): sum of each byte from 0x40 to declared_len
+        total = sum(data[0x40:declared]) & 0xffff
         chk = w(0x1c)
         if total != chk and strict:
             raise StoryFileError(
@@ -467,6 +474,7 @@ class StoryFile:
             h.screen_w_units, h.screen_h_units = w(0x22), w(0x24)
             h.font_w_units, h.font_h_units = raw[0x26], raw[0x27]
             h.def_bg, h.def_fg = raw[0x2c], raw[0x2d]
+            h.term_chars_addr = w(0x2e)
             h.std_rev = raw[0x32]
             h.alphabet_addr, h.header_ext_addr = w(0x34), w(0x36)
         h.length_divisor = d
