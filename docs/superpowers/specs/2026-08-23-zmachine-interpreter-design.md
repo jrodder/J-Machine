@@ -111,7 +111,7 @@ class StoryInfo:
 
 class Session:
     def load(self, path: str | os.PathLike,
-             seed: bytes | None = None) -> list[Event]: ...
+             seed: int | None = None) -> list[Event]: ...
     def input(self, line: str) -> list[Event]: ...
     def save(self) -> bytes: ...
     def restore(self, image: bytes) -> list[Event]: ...
@@ -253,7 +253,7 @@ no decode cost).
 ## 10. CLI
 
 ```
-zmach story.z5 [--strict] [--seed <hex>] [--save <file>] [--restore <file>]
+zmach story.z5 [--strict] [--seed <int>] [--save <file>] [--restore <file>]
 ```
 
 - Plain REPL: print `Text` data, show `>`, read a line, loop.
