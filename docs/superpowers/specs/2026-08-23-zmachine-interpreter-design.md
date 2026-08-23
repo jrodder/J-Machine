@@ -101,11 +101,12 @@ purpose):
 ```python
 @dataclass
 class StoryInfo:
-    name: str
-    author: str
-    version: int          # 3, 5, 8
-    release: int
-    serial: int
+    name: str          # filename stem — the z-machine header has no
+                       # name/author field (the title banner is printed
+                       # game text)
+    version: int       # 3, 5, or 8
+    release: int       # header bytes 2..3
+    serial: str        # 6 ASCII chars, header bytes 18..23
     file_sha256: bytes
 
 class Session:
@@ -159,29 +160,59 @@ traceback.
   stream, no split windows, no status-line re-rendering, `more` is a
   no-op, cursor/style ops are no-ops. Standard Infocom games degrade
   cleanly to sequential text.
-- **v8 strings** decode through the story's wide-string table (Blorb
-  table 7 if present, else the v8 native table); output is UTF-8.
+- **v8 wide strings** (16-bit ZSCII sequences) decode directly to
+  Unicode; output is UTF-8. The standard v8 wide-string table is
+  built-in; custom Blorb IFwid tables are out of scope (corpus games use
+  the standard table).
 - Chunking of `Text` into small messages is the transport's job (Phase 2),
   never the VM's (INV4).
 
 ## 7. Save format ("ZMSAVE v1")
 
+Fixed offsets, big-endian integers throughout. The memory image is a
+uniform 524,288 bytes (512 KB) for all versions — the maximum v8 story
+size (ZSpec 1.0 §1.1.4; verified against risorg.z8, declared length
+0xd86d×8 = 443,240 bytes). Oversized for v3 (128 KB max) and v5 (256 KB
+max); deliberately uniform so the format has a single trailer offset and
+no version-dependent parsing. Pointer/PC fields are u32 (v8 addresses
+exceed 16 bits; high memory extends to 512 KB via 8× packed addresses).
+
 ```
-offset  size  field
-0       8     magic b"ZMSV0001"
-8       64    story file header (first 64 bytes of the story file)
-72      32    SHA-256 of the story file
-104     32    RNG state (version-dependent semantics, zero-padded to 32)
-136     65536 full 64 KB memory image
-65672   32    SHA-256 of bytes 0..65671 (trailer)
+offset   size   field
+0        8      magic b"ZMSV0001"
+8        64     story file header (first 64 bytes; byte 0 = version)
+72       32     SHA-256 of the story file as loaded
+104      4      sp (operand-stack top address)
+108      4      error state (0 = none, else current error number)
+112      1      n_frames (0 = top level)
+113      2550   call frames: n_frames × 10 bytes
+               {return_pc u32, locals_base u32, n_locals u8, n_args u8},
+               zero-padded to 255 entries
+2663     1      n_catches
+2664     1020   catch tokens u32, zero-padded to 255
+3684     32     RNG: seed u32 + 28 zero bytes
+3716     524288 full memory image (512 KB, zero-padded beyond the story)
+528004   32     SHA-256 of all preceding bytes (trailer)
 ```
 
-Total: 65,704 bytes. Uncompressed (a 65 KB flat blob chunks fine over
-LoRa; no dependency, no decode cost).
+Total: 528,036 bytes, all versions. Uncompressed (saves are host-local
+— spec §2 — so size is a non-issue; no compression, no dependency,
+no decode cost).
 
-- The z-machine's PC, registers, and stack pointer live in the dynamic
-  memory region, so the memory image *is* the complete machine state; the
-  RNG slot covers any RNG state the implementation keeps outside memory.
+- The call chain, operand-stack pointer, and error state are **not** part
+  of the story file's memory, so they live in the VM-state block above;
+  together with the memory image (globals, object table, arrays, and
+  operand-stack contents all live in dynamic memory — locals/args in a
+  frame region growing up from just above the globals table, arrays
+  growing down from the high-memory base) this is the complete machine
+  state.
+- RNG: seed u32 in predictable mode (a negative `@random` argument
+  reseeds; `@random 0` reseeds from the host clock). After a restore the
+  machine is in predictable mode with the saved seed.
+- Precondition: the input buffer is empty when a save is taken (true at
+  every API boundary by INV2, and true for in-game saves because the
+  library consumes the line before invoking the `save` opcode). `save`
+  asserts this.
 - Restore validates magic, story hash, and trailer hash in that order;
   any mismatch → `SaveFileError`.
 - The server owns all policy (slots, rotation, autosave cadence,
@@ -243,9 +274,12 @@ zmach story.z5 [--strict] [--seed <hex>] [--save <file>] [--restore <file>]
 
 **Gates:**
 
-1. **Conformance:** ztest (v3/v5/v8), CZECH (v5), StrictZ (v8) pass;
-   document any failure rather than paper over it (undo legitimately
-   unsupported).
+1. **Conformance:** StrictZ (v5) and CZECH (v5, output comparison vs
+   czech.out5) pass; crashme.z5 runs to completion without a Python
+   traceback; unicode.z5 output matches dfrotz; v3 verified via corpus
+   differential (zork1.z3, minizork.z3); v8 via risorg differential +
+   v8-specific unit tests. Document any failure rather than paper over
+   it (undo legitimately unsupported).
 2. **Differential vs dfrotz:** scripted walkthrough of Zork I (target
    100+ commands including an in-game save/restore), byte-identical output
    after whitespace normalization, same `--seed`. Plus a short v8
@@ -293,8 +327,12 @@ zmach story.z5 [--strict] [--seed <hex>] [--save <file>] [--restore <file>]
 
 - **Runtime:** Python ≥ 3.10, stdlib only (`struct`, `hashlib`,
   `dataclasses`, `pathlib`). No runtime third-party packages.
-- **Dev:** dfrotz (system binary), test corpus + conformance suites from
-  zifmia.
+- **Dev:** dfrotz (installed at `/usr/games/dfrotz`; `-t` plain text,
+  `-s <seed>` RNG seed), test corpus + conformance suites from zifmia,
+  dork (github.com/ntoskrnlexe/dork) as structural reference.
+- **Committed references** (authoritative local copies, fetched in the
+  first implementation task): ZSpec 1.0 full text, ZSpec 1.1 addendum,
+  and dork `machine.ts` / `text.ts` / `vocab.ts` under `references/`.
 - Tests use stdlib `unittest` (zero extra deps).
 
 ```
@@ -332,3 +370,19 @@ J-Machine/
 - Phase 2 hosting is multi-session: one `Session` + one save file per
   Reticulum identity, autosave-per-turn, resume-on-reconnect; no scale or
   DoS hardening (niche deployment) — approved 2026-08-23.
+- Conformance set = StrictZ + CZECH + crashme + unicode + corpus
+  differentials; ztest dropped (canonical hosting not reliably
+  available) — 2026-08-23.
+- `StoryInfo` carries no author field: the z-machine header has no
+  name/author fields at all (the title banner is printed game text; the
+  serial at bytes 18..23 is the only traditional header string) —
+  verified against dork + dfrotz output, 2026-08-23.
+- RNG: 32-bit LCG (a=1664525, c=1013904223), `result =
+  floor((seed / 0xffffffff) * n) + 1`; seed via negative `@random`
+  argument; initial seed via `--seed`. Verified against dork (conformance
+  tested) and dfrotz `-s`, 2026-08-23.
+- Save format v1 includes an explicit VM-state block (sp, error state,
+  call frames, catch tokens) because the call chain is not part of story
+  memory; the memory image is a uniform 512 KB (v8 max story size,
+  ZSpec 1.0 §1.1.4) so the format has no version-dependent offsets —
+  2026-08-23.
