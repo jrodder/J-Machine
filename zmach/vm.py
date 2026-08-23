@@ -116,12 +116,11 @@ class VM:
         # Output windows (text model, dfrotz -t parity): window 1 is the
         # status line. The 80-col buffer is PERSISTENT (the game updates it
         # in place); the line is emitted when its content changes, at the
-        # next main-window print or at the input seam.
+        # input seam (or machine end).
         self._win = 0
         self._status = [" "] * 80
         self._status_col = 0
         self._status_dirty = False
-        self._status_shown = False
         self._last_status = None
         # dfrotz -t screen model (COMPRESSION_SPANS): main-window lines are
         # buffered per line and flushed at each read; a bare `>` (the game's
@@ -853,7 +852,6 @@ class VM:
         if line == self._last_status:
             return None
         self._last_status = line
-        self._status_shown = True
         return line
 
     def _flush_at_seam(self, final=False):
@@ -933,8 +931,9 @@ class VM:
         # time/routine operands were evaluated at decode time (their call
         # side effects happen exactly once — that is why the pending tuple
         # stores decoded operands), and a read never times out, so the
-        # v5 result is always 10 (ZSpec author-recommended terminator),
-        # never the routine's.
+        # v5 result is always 13 (the CR terminator) — matching frotz
+        # (stores the terminator key) and dork (store(13)); ZSpec's "10"
+        # is only an author recommendation.
         t1 = o[0] & 0xFFFF
         t2 = o[1] & 0xFFFF
         codes = self._consume_line()
@@ -949,7 +948,7 @@ class VM:
                 self.mem.putb(t1 + 2 + left + i, c)
             self.mem.putb(t1 + 1, left + len(new))
             self._tokenise(t1, t2)
-            self.op_store(10)
+            self.op_store(13)
         else:
             # v1-4: byte0 = max-1 preset; chars at byte1.., 0-terminated
             maxn = self.mem.getb(t1)
@@ -1042,6 +1041,11 @@ class VM:
     def op_show_status(self, o, n):
         # 0OP:188 show_status: v3 only; v5+ treats it as nop (Wishbringer
         # v5 rel 23 contains it by accident — ZSpec note).
+        # P2 (task 6 review): the v3 line is emitted immediately here and
+        # again by _flush_at_seam's pre-read auto-redraw, so a v3 turn can
+        # show the status twice / out of order vs the buffered main lines.
+        # v3 output ordering is adjudicated against the Zork I oracle in
+        # task 8; leave the v5 path (the only gated one) alone.
         if self.version < 4:
             self._emit_v3_status()
 
@@ -1226,7 +1230,14 @@ class VM:
             self._stream3_table = o[1] & 0xFFFF if n > 1 else 0
             self._stream3_buf = []
         elif self._stream3:
-            self.mem.putw(self._stream3_table, len(self._stream3_buf))
+            # Deselect (any non-3 number; the compiler emits -3): word 0 =
+            # char count, then the captured zscii chars at table+2.. (ZSpec
+            # §7.1.2.1) — games read this back (e.g. the a/an article check).
+            buf = "".join(self._stream3_buf)
+            self.mem.putw(self._stream3_table, len(buf))
+            for i, ch in enumerate(buf):
+                self.mem.putb(self._stream3_table + 2 + i,
+                              char_to_zscii(ch, self.zscii_extra))
             self._stream3 = False
             self._stream3_buf = []
 
