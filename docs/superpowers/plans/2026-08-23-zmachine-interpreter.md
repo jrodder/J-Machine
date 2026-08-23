@@ -92,7 +92,7 @@ Words are 16-bit big-endian: **c1 = (w>>10)&31, c2 = (w>>5)&31, c3 = w&31, end =
 Default tables (ZSCII output codes): A0: z-char 0 = space, 1-3 = abbreviations, 4/5 = shift, **6-31 = `a`-`z`** (digits are NOT in A0); A1: 6-31 = `A`-`Z`; A2: 6 = escape (10-bit ZSCII start), 7 = ZSCII 13 (newline), **8-17 = `0`-`9`**, 18=`.`, 19=`,`, 20=`!`, 21=`?`, 22=`_`, 23=`#`, 24=`'` (0x27), 25=`"` (0x22), 26=`/`, 27=`\`, 28=`-`, 29=`:`, 30=`(`, 31=`)`. (Use dork's `ALPHABET` string constant verbatim: `'abcdefghijklmnopqrstuvwxyz' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' + '*\n0123456789.,!?_#\'"/\\-:()'` indexed by `ts*26 + v - 6`.)
 ZSCII→char: 13 → `\n`, 0 → `''`, 1..154 → `chr(code)`, 155..251 → custom table (header ext word 3) else default table (dork `DEFAULT_ZSCII_EXTRA`, 69 chars for 155..223). v5+ custom alphabet: 78 bytes at header 0x34 (3×26 ZSCII values for A0/A1/A2 z-chars 6..31; A2 z-chars 6,7 keep escape/newline meaning).
 
-### Dictionary (verified against zork1.z3 live: dict 0x3b21, n_sep=3, entry_len=7, count=519)
+### Dictionary (verified against zork1.z3 live: dict 0x3b21, n_sep=3, entry_len=7, count=697 — ends exactly at highmem 0x4e37)
 Header at dictionary address: `n` bytes (n = first byte) of word-separator ZSCII codes, 1 byte entry length, 1 word count. Entries follow, **sorted** by encoded text as a big integer (binary search). v3: 4 text bytes (6 z-chars, pad 5) + (entry_len−4) data bytes. v5+: 6 text bytes (9 z-chars) + (entry_len−6) data bytes.
 Encoding typed text for lookup: lowercase, no abbreviations, pad 5, 6 z-chars (v3) or 9 (v5+), multi-zchar constructions left incomplete if no room (ZSpec §3.7). "i" v5 form = `$38a5 $14a5 $94a5` (the $48a5 in ZSpec 1.0's §3.7 example is a typo — it decodes to "jr…"). **Empirically verified: 664/664 pure-alphabetic words in planetfall.z5's Inform-6-compiled dictionary match this encoder's output byte-exactly.** Abbrev-table entries are WORD ADDRESSES (byte addr ÷ 2), always ×2 regardless of version (ZSpec §1.2.2: "Word addresses are used only in the abbreviations table") — NOT the version's packed multiplier.
 
@@ -697,7 +697,8 @@ class TestStrings(unittest.TestCase):
     def test_encode_decode_roundtrip(self):
         sf, m = load("planetfall.z5")
         extra, alpha = read_custom_tables(sf)
-        for s in ("look", "open mailbox", "a", "zz", "go north"):
+        # dictionary-form encoding is per-word (ZSpec §3.7): single words only
+        for s in ("look", "open", "a", "zz", "go"):
             b = encode_text(s, m, 5)
             off = 0x8000
             m.mem[off:off + len(b)] = b
@@ -708,11 +709,12 @@ class TestStrings(unittest.TestCase):
         sf, m = load("zork1.z3")
         extra, _ = read_custom_tables(sf)
         b = encode_text("open", m, 3)
-        # binary search zork1's dictionary (n_sep=3, entry_len=7, count=519)
+        # binary search zork1's dictionary (n_sep=3, entry_len=7, count=697)
         d = sf.header.dictionary
-        n_sep, entry_len = m.getb(d), m.getb(d + 1 + n_sep)
+        n_sep = m.getb(d)
+        entry_len = m.getb(d + 1 + n_sep)
         count = m.getw(d + 2 + n_sep)
-        self.assertEqual((n_sep, entry_len, count), (3, 7, 519))
+        self.assertEqual((n_sep, entry_len, count), (3, 7, 697))
         base = d + 2 + n_sep + 2
         lo, hi = 0, count - 1
         found = False

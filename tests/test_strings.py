@@ -38,7 +38,8 @@ class TestStrings(unittest.TestCase):
     def test_encode_decode_roundtrip(self):
         sf, m = load("planetfall.z5")
         extra, alpha = read_custom_tables(sf)
-        for s in ("look", "open mailbox", "a", "zz", "go north"):
+        # dictionary-form encoding is per-word (ZSpec §3.7): single words only
+        for s in ("look", "open", "a", "zz", "go"):
             b = encode_text(s, m, 5)
             off = 0x8000
             m.mem[off:off + len(b)] = b
@@ -49,11 +50,12 @@ class TestStrings(unittest.TestCase):
         sf, m = load("zork1.z3")
         extra, _ = read_custom_tables(sf)
         b = encode_text("open", m, 3)
-        # binary search zork1's dictionary (n_sep=3, entry_len=7, count=519)
+        # binary search zork1's dictionary (n_sep=3, entry_len=7, count=697)
         d = sf.header.dictionary
-        n_sep, entry_len = m.getb(d), m.getb(d + 1 + n_sep)
+        n_sep = m.getb(d)
+        entry_len = m.getb(d + 1 + n_sep)
         count = m.getw(d + 2 + n_sep)
-        self.assertEqual((n_sep, entry_len, count), (3, 7, 519))
+        self.assertEqual((n_sep, entry_len, count), (3, 7, 697))
         base = d + 2 + n_sep + 2
         lo, hi = 0, count - 1
         found = False
