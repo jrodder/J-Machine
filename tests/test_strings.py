@@ -73,6 +73,33 @@ class TestStrings(unittest.TestCase):
                 hi = mid - 1
         self.assertTrue(found, "'open' must be in Zork I's dictionary")
 
+    def test_encode_incomplete_construction(self):
+        sf, m = load("zork1.z3")
+        extra, _ = read_custom_tables(sf)
+        # v3: 6 z-chars; a digit at slot 6 leaves no room for the 2-char A2
+        # construction -> shift-only, 4 bytes total, decodes back to "aaaaa"
+        b = encode_text("aaaaa0", m, 3)
+        self.assertEqual(len(b), 4)
+        off = 0x8000
+        m.mem[off:off + len(b)] = b
+        text, _ = decode_text(m, sf.header.fwords, off, extra, None)
+        self.assertEqual(text, "aaaaa")
+        # v5: 9 z-chars; 8 letters + a digit -> 6 bytes, decodes to 8 letters
+        sf5, m5 = load("planetfall.z5")
+        extra5, _ = read_custom_tables(sf5)
+        b5 = encode_text("aaaaaaaa8", m5, 5)
+        self.assertEqual(len(b5), 6)
+        m5.mem[off:off + len(b5)] = b5
+        text5, _ = decode_text(m5, sf5.header.fwords, off, extra5, None)
+        self.assertEqual(text5, "aaaaaaaa")
+
+    def test_char_to_zscii(self):
+        from zmach.strings import char_to_zscii
+        self.assertEqual(char_to_zscii("\n"), 13)
+        self.assertEqual(char_to_zscii("a"), ord("a"))
+        self.assertEqual(char_to_zscii("ä"), 155)   # default table is not identity
+        self.assertEqual(char_to_zscii("ß"), 161)
+
 
 if __name__ == "__main__":
     unittest.main()

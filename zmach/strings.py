@@ -58,10 +58,11 @@ def char_to_zscii(ch, extra=DEFAULT_ZSCII_EXTRA):
     o = ord(ch)
     if o < 0xA0:
         return o
-    if _EXTRA_MIN <= o <= _EXTRA_MAX:
-        i = o - _EXTRA_MIN
-        if i < len(extra) and extra[i] == ch:
-            return o
+    # the extra table is NOT an identity map (codepoint != ZSCII code):
+    # scan it (dork charToZscii semantics)
+    for i, c in enumerate(extra):
+        if c == ch:
+            return _EXTRA_MIN + i
     return o
 
 
@@ -141,9 +142,15 @@ def encode_text(s, mem, version):
             zc.append(6 + (ord(ch) - 97 if ch.islower() else ord(ch) - 65))
             i += 1
         elif ch in A2_ENC and A2_ENC.index(ch) >= 2:   # 0='^' escape, 1=\n: unencodable
-            zc.append(5)                 # shift to A2
-            zc.append(6 + A2_ENC.index(ch))
-            i += 1
+            if len(zc) + 2 <= n:
+                zc.append(5)                 # shift to A2
+                zc.append(6 + A2_ENC.index(ch))
+                i += 1
+            else:
+                # no room for the 2-char construction: leave it incomplete
+                # (shift only) rather than overflow (ZSpec §3.7)
+                zc.append(5)
+                break
         else:                            # unmappable -> stop (pad)
             break
     zc += [5] * (n - len(zc))            # pad char 5, incomplete constructions OK
