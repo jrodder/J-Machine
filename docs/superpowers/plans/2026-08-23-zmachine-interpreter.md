@@ -134,16 +134,19 @@ cp /tmp/dork-io.ts references/dork/io.ts
 ```bash
 mkdir -p tests/corpus
 B=https://raw.githubusercontent.com/jeffnyman/zifmia/master
-for f in zorks/zork1.z3 zorks/minizork.z3 infocom/planetfall.z5 games/risorg.z8 \
-         testers/czech/czech.z5 testers/czech/czech.out5 testers/strictz/strictz.z5 \
-         testers/crashme/crashme.z5 testers/unicode/unicode.z5 testers/random/random.z5; do
+for f in zorks/zork1.z3 zorks/minizork.z3 infocom/planetfall.z5 games/risorg.z8; do
   curl -sL "$B/$f" -o "tests/corpus/$(basename $f)"
 done
-# optional fifth corpus file (v3 flagship in v5): try, don't fail
-curl -sL https://raw.githubusercontent.com/the-infocom-files/zork1/develop/zork1.z5 -o tests/corpus/zork1.z5 || true
+# zifmia tester files live flat under testers/ (no per-suite subdirs)
+for f in czech/czech.z5 czech/czech.out5 strictz/strictz.z5 crashme/crashme.z5 \
+         unicode/unicode.z5 random/random.z5; do
+  curl -sL "$B/testers/$(basename $f)" -o "tests/corpus/$(basename $f)"
+done
+# optional fifth corpus file (v3 flagship in v5): NOT available — the-infocom-files/zork1
+# hosts sources only; the v5 flagship differential uses planetfall (v5) + Zork I (v3)
 ```
 
-Expected sizes: zork1.z3 92160, minizork.z3 52216, planetfall.z5 136560, risorg.z8 443392. `du -b` must match or the fetch is corrupt.
+Expected sizes: zork1.z3 92160, minizork.z3 52216, planetfall.z5 136560, risorg.z8 443392, crashme.z5 37376, czech.z5 13312, czech.out5 2319, random.z5 5632, strictz.z5 4096, unicode.z5 4608. `du -b` must match or the fetch is corrupt.
 
 - [ ] **Step 3: Package + util**
 
@@ -1519,17 +1522,15 @@ import unittest
 from pathlib import Path
 from tests.util import dfrotz_transcript, norm
 from tests.faketx.channel import FakeChannel
-from zmach.session import Session
 
 C = Path(__file__).parent / "corpus"
 LINES = ["look", "open mailbox", "take leaflet", "west", "north", "quit"]
 
 class TestFakeTransport(unittest.TestCase):
     def test_chunked_channel_matches_local(self):
-        # through the network-shaped channel
+        # every byte through the network-shaped channel — load and input
         ch = FakeChannel(chunk=7)   # tiny chunks, worst-case boundaries
-        s = Session()
-        s.load(C / "zork1.z3", seed=10)
+        ch.load(C / "zork1.z3", seed=10)
         out = ch.drain()
         for line in LINES:
             ch.send_input(line)
