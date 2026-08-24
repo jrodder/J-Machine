@@ -320,6 +320,11 @@ Addresses are printed as plain `prettyhexrep` hashes (RNS's own `<ab:cd:...>` fo
 is left to the browser rather than asserted. `jclient browse` extracts the hashes
 and prints `name + address` lines.
 
+The rendered game name is the **story filename stem** (e.g. `zork1`, not a
+display name like `Zork I`) — the example above is illustrative; the stem is
+the convention used throughout §3/§4/§5 (save slots, identities, session keys)
+and is what the `render_page`/`parse_page` format carries (no spaces).
+
 ## 7. Testing and done bar
 
 **Layering:** all protocol logic lives in `jhost/protocol.py` as pure functions

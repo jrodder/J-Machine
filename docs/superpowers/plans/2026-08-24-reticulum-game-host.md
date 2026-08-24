@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **One-way dependency:** `zmach/` and its tests never import RNS/LXMF. Only `jhost/` and `jclient/` do (spec §1). `jhost/protocol.py` specifically is stdlib-only (it imports `zmach` only) — that split is what makes the protocol unit-testable without RNS.
-- **Version pins:** `rns>=1.5,<1.6`, `lxmf>=1.1,<1.2` (installed in a `.venv`; `zmach` itself remains hard-dependency-free stdlib).
+- **Version pins:** `rns>=1.5,<1.6`, `lxmf>=1.1,<1.2` — declared in `pyproject.toml` `[project].dependencies` (spec §3/§8) and installed into a `.venv` (Task 2); `zmach` itself remains hard-dependency-free stdlib.
 - **RNS is a process singleton** — re-init in one process raises `OSError`. Host and client in the test rig are therefore **separate OS processes** (loopback TCP: host `TCPServerInterface` 127.0.0.1:4242, client `TCPClientInterface` → 127.0.0.1:4242; `share_instance=yes`, unique `instance_name` per process).
 - **Game protocol:** LXMF delivery messages. One game line in per message → one reply out = the **cumulative transcript** of that host-side session (intro/restored batch + every turn, `Error` events inline as `[error] ...`). Reply is self-contained; no client-side state needed. (Spec §4: "reply = transcript so far + the turn's Text data".)
 - **Input cap:** 200 chars per line (trust boundary, untrusted network input). Output uncapped (RNS auto-chunks large responses, verified spec §2).
@@ -32,6 +32,7 @@
 3. **Two players, one game** = two independent `GameState` entries (session map is keyed `(game, sender)`; spec §5: "Two different identities: fully independent"). The two-players network test therefore asserts *each* player's final reply equals dfrotz of *that player's own* line sequence (same host seed), with alternating sends to exercise the lock — "no cross-talk".
 4. **Config scaffold is non-clobbering:** `write_rns_config` only writes when the config file is missing (an operator-edited config with testnet/LoRa sections survives restarts). Fresh temp dirs in tests always get the scaffold.
 5. **jclient is the test client** (spec §7); its scaffolded RNS config (loopback) is by design — the production client is Sideband using the phone's real `~/.rns`.
+6. **Unavailable story is a reply, not an exception** — a story file that fails `StoryFile.load` at first contact returns `"[Game unavailable]"` (logged, no session created; the sender may retry). This is the `handle_message` "never raises" contract extended past the spec §4 table, which only enumerates unverified/too-long/done/corrupt-save.
 
 ---
 
@@ -52,7 +53,7 @@
   - `handle_message(game, sender, text, verified, sessions, store, story_path, seed=None) -> str` — one inbound message → reply text; mutates `sessions: dict{(game, sender): GameState}` in place; never raises on protocol failures (rejection/done/corrupt-save are replies)
   - `render_page(name, games) -> str` — `games: list[(stem, version:int, addr_str)]`
   - `write_rns_config(config_dir, role, port=4242, instance_name=None, overwrite=False) -> Path` — `role` `"host"`|`"client"`; returns the config path; does not overwrite an existing config unless `overwrite=True`
-  - Reply constants (exact strings): `"[Rejected: unverified sender]"`, `"[Input rejected: line too long (>200)]"`, `"[Game over]"`
+  - Reply constants (exact strings): `"[Rejected: unverified sender]"`, `"[Input rejected: line too long (>200)]"`, `"[Game over]"`, `"[Game unavailable]"` (story file unreadable at first contact — a robustness addition beyond spec §4's table)
 
 - [ ] **Step 1: Write the failing tests** — `tests/test_protocol.py`
 
@@ -150,6 +151,13 @@ class Protocol(unittest.TestCase):
         self.p.store.save(self.p.game, S1, b"not-a-save" * 50)
         r = self.p.call(text="")
         self.assertEqual(norm(r), norm(play_session_lines(ZORK, [], seed=SEED)))
+
+    def test_story_unavailable(self):
+        # unreadable story file at first contact -> reply, not exception
+        r = handle_message("zork1", S1, "", True, self.p.sessions,
+                           self.p.store, "/nonexistent/story.z5", SEED)
+        self.assertEqual(r, "[Game unavailable]")
+        self.assertEqual(self.p.sessions, {})  # nothing stored, sender may retry
 
     def test_existing_session_empty_line(self):
         self.assertEqual(self.p.call(text=""), self.p.call(text=""))
@@ -266,7 +274,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from zmach.events import Error, SaveFileError, Text
+from zmach.events import Error, SaveFileError, StoryFileError, Text
 from zmach.session import Session
 
 INPUT_CAP = 200  # trust boundary: player lines are short (spec §4)
@@ -333,7 +341,8 @@ def _render(events):
 def handle_message(game, sender, text, verified, sessions, store,
                    story_path, seed=None):
     """One inbound LXMF message -> reply text. Never raises on protocol
-    failures: rejection/done/corrupt-save are replies (spec §4).
+    failures: rejection/done/corrupt-save/unavailable-story are replies
+    (spec §4).
 
     game      story stem (e.g. "zork1")
     sender    32-hex-char lxmf.delivery destination hash of the sender
@@ -350,7 +359,12 @@ def handle_message(game, sender, text, verified, sessions, store,
     key = (game, sender)
     st = sessions.get(key)
     if st is None:
-        sessions[key] = st = _new_game(game, sender, story_path, store, seed)
+        try:
+            sessions[key] = st = _new_game(game, sender, story_path, store, seed)
+        except (StoryFileError, OSError) as e:
+            print(f"jhost: {game}/{sender[:8]}: story load failed ({e}); "
+                  f"game unavailable", file=sys.stderr)
+            return "[Game unavailable]"
     elif st.session.done:
         return "[Game over]"
     if text == "":
@@ -464,12 +478,12 @@ def write_rns_config(config_dir, role, port=4242, instance_name=None,
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python3 -m unittest tests.test_protocol -v`
-Expected: 13 PASS
+Expected: 15 PASS
 
 - [ ] **Step 5: Run the full suite (no regressions)**
 
 Run: `python3 -m unittest discover -s tests`
-Expected: all green (Phase 1 count + 13)
+Expected: all green (Phase 1 count + 15)
 
 - [ ] **Step 6: Commit**
 
@@ -483,13 +497,14 @@ git commit -m "feat: jhost protocol core — pure message handling, save stores,
 ### Task 2: venv + rig smoke test (spec test 0) — the highest-risk unknown
 
 **Files:**
-- Create: `.venv/` (not committed), `tests/network/__init__.py` (empty), `tests/network/netrig.py`, `tests/network/test_netrig.py`
+- Create: `.venv/` (not committed), `pyproject.toml` (dependency declaration, spec §3/§8), `tests/network/__init__.py` (empty), `tests/network/netrig.py`, `tests/network/smoke_host.py`, `tests/network/test_netrig.py`
 - Modify: `.gitignore` (add `.venv/`)
 
 **Interfaces:**
-- Consumes: `jhost.protocol.write_rns_config` (Task 1)
+- Consumes: `jhost.protocol.{write_rns_config, DEST_JSON, unpretty}` (Task 1)
 - Produces (used by Task 5, exact names):
   - `netrig.DEST_JSON` — re-export of `jhost.protocol.DEST_JSON`
+  - `tests.network.smoke_host` — a minimal inline RNS+LXMF responder (page node + one delivery identity + reply callback) run as `python -m tests.network.smoke_host <data-dir> <port> [--name]`. It proves the transport (announce → recall → RNS request → LXMF delivery → reply) with no `jhost` dependency; Task 3's `jhost/host.py` is this exact wiring moved into the `Host` class.
   - `netrig.spawn(argv, name, out_dir) -> subprocess.Popen` — host-style subprocess; stdout+stderr → `out_dir/proc-<name>.log`
   - `netrig.run_captured(argv, name, out_dir, timeout=180) -> (rc, out_text, err_text)` — run to completion, tee to `proc-<name>.log`
   - `netrig.play_once(game_addr, lines, work_dir, name, timeout=180, port=4242) -> (rc, stdout_text)` — `jclient play` subprocess, all lines on stdin at once
@@ -498,11 +513,33 @@ git commit -m "feat: jhost protocol core — pure message handling, save stores,
   - `netrig.logs_tail(dir, n=40) -> str` — tail of every `*.log` under dir
   - `netrig.unpretty` — re-export of `jhost.protocol.unpretty` (stdlib-only)
 
-- [ ] **Step 1: Create the venv and install the pins**
+- [ ] **Step 1: Write `pyproject.toml`, create the venv, install the pins**
 
 ```bash
+# pyproject.toml (declaration of record, spec §3/§8; `find` so the packages
+# can be created incrementally across tasks without re-editing this file)
+cat > pyproject.toml <<'EOF'
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "j-machine"
+version = "0.2.0"
+description = "Z-machine interpreter and Reticulum game host"
+requires-python = ">=3.10"
+dependencies = [
+    "rns>=1.5,<1.6",
+    "lxmf>=1.1,<1.2",
+]
+
+[tool.setuptools.packages.find]
+include = ["zmach*", "jhost*", "jclient*"]
+EOF
+
 python3 -m venv .venv
-.venv/bin/pip install -U pip "rns>=1.5,<1.6" "lxmf>=1.1,<1.2"
+.venv/bin/pip install -U pip
+.venv/bin/pip install -e .
 .venv/bin/python -c "import RNS; print(RNS.__version__)"
 ```
 Expected: `1.5.x`. **If the install fails on this Python (3.14):** create the venv with the newest available older interpreter that works (e.g. `python3.12 -m venv .venv`) and note it in the commit message. If no interpreter can install rns 1.5.x, **stop and report** — that is a design-level finding (spec §7 Task-0 exit condition), not something to paper over.
@@ -536,9 +573,11 @@ class Smoke(unittest.TestCase):
         from tests.network import netrig
         with tempfile.TemporaryDirectory() as d:
             host_d, client_d = Path(d) / "host", Path(d) / "client"
-            h = netrig.spawn([sys.executable, "-u", "-m", "jhost",
-                              str(Path(__file__).parent.parent / "corpus"),
-                              "--data-dir", str(host_d), "--name", "Smoke"],
+            # minimal inline responder (smoke_host.py) — no jhost dependency;
+            # proves the transport before the real host exists (Task 3)
+            h = netrig.spawn([sys.executable, "-u", "-m",
+                              "tests.network.smoke_host",
+                              str(host_d), "4242", "Smoke"],
                              "host", host_d)
             try:
                 self.assertTrue(
@@ -564,18 +603,19 @@ if __name__ == "__main__":
 - [ ] **Step 3: Run it to verify it fails**
 
 Run: `.venv/bin/python -m unittest tests.network.test_netrig -v`
-Expected: FAIL — `No module named jhost` (host not built yet) or `No module named jclient`
+Expected: FAIL — `No module named tests.network.smoke_host` (responder not built yet) or `No module named jclient`
 
 - [ ] **Step 4: Implement `tests/network/__init__.py` (empty) and `tests/network/netrig.py`**
 
-The rig helpers are subprocess/log plumbing. The smoke *client* (`jclient smoke`, built in Task 4) is raw RNS/LXMF — it proves the 1.5.0/1.1.1 API surface (announce → recall → RNS request → LXMF delivery → reply) on its own, with no jhost protocol involved. Every RNS/LXMF call used anywhere in this plan is a spec-§2-verified signature; if one is wrong at runtime, read the cited venv source file (`site-packages/RNS/*.py`, `site-packages/LXMF/*.py`) rather than guessing.
+The rig helpers are subprocess/log plumbing. The smoke *responder* (`tests/network/smoke_host.py`, Step 5) and smoke *client* (`jclient smoke`, Step 5) are raw RNS/LXMF — together they prove the 1.5.0/1.1.1 API surface (announce → recall → RNS request → LXMF delivery → reply) with no `jhost` protocol involved. Every RNS/LXMF call used anywhere in this plan is a spec-§2-verified signature; if one is wrong at runtime, read the cited venv source file (`site-packages/RNS/*.py`, `site-packages/LXMF/*.py`) rather than guessing.
 
 ```python
 """Test-only RNS rig (spec §7): two OS processes, real RNS instances,
 loopback TCP pairing, temp data dirs. RNS is a process singleton (spec §2),
-so host and client are subprocesses. Host = `python -m jhost`; clients =
-`python -m jclient`. Hash handoff via data/host-destinations.json (also the
-operator feature, spec §3).
+so host and client are subprocesses. Host responders = `python -m
+tests.network.smoke_host` (Task 2 smoke) or `python -m jhost` (Task 5
+network suite); clients = `python -m jclient`. Hash handoff via
+data/host-destinations.json (also the operator feature, spec §3).
 """
 import subprocess
 import sys
@@ -684,7 +724,110 @@ def play_proc(game_addr, work_dir, name, port=4242):
                             stderr=subprocess.STDOUT)
 ```
 
-- [ ] **Step 5: Implement the `jclient` stub needed by the smoke** — `jclient/__init__.py` (empty), `jclient/client.py`, `jclient/__main__.py` with ONLY the `smoke` command working (Task 4 adds `scan`/`browse`/`play`).
+- [ ] **Step 5: Implement `tests/network/smoke_host.py` (the responder) and the `jclient` stub** — `jclient/__init__.py` (empty), `jclient/client.py`, `jclient/__main__.py` with ONLY the `smoke` command working (Task 4 adds `scan`/`browse`/`play`).
+
+`tests/network/smoke_host.py` — the minimal inline responder (no `jhost` dependency; Task 3's host is this wiring moved into the `Host` class):
+
+```python
+"""Task 2 rig smoke responder (spec §7 test 0): a minimal RNS+LXMF node
+that proves the transport — announce -> recall -> RNS request -> LXMF
+delivery -> reply — before jhost exists. Task 3's jhost/host.py is this
+exact wiring (page node + one delivery router + reply callback) moved into
+the Host class.
+
+Run: python -m tests.network.smoke_host <data-dir> <port> [--name]
+Writes <data-dir>/host-destinations.json = {"page": <hash>,
+"games": {"smoke": <hash>}}; announces; then serves until killed.
+"""
+import json
+import sys
+import time
+from pathlib import Path
+
+import RNS
+from LXMF import LXMMessage, LXMRouter
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from jhost.protocol import DEST_JSON, write_rns_config  # stdlib-only helpers
+
+NAME = "Smoke"
+
+
+def main():
+    data_dir = Path(sys.argv[1])
+    port = int(sys.argv[2])
+    name = sys.argv[3] if len(sys.argv) > 3 else NAME
+
+    write_rns_config(data_dir / "rns", "host", port)
+    RNS.Reticulum(str(data_dir / "rns"))
+
+    # page node (nomadnetwork.node convention, spec §2)
+    page_ident = _identity(data_dir, "page")
+    page_dest = RNS.Destination(page_ident, RNS.Destination.IN,
+                                RNS.Destination.SINGLE, "nomadnetwork", "node")
+    page_dest.register_request_handler("/page/index.mu", _page,
+                                       allow=RNS.Destination.ALLOW_ALL)
+
+    # one game delivery identity + reply callback (lxmf.delivery, spec §2)
+    game_ident = _identity(data_dir, "smoke")
+    router = LXMRouter(identity=game_ident,
+                       storagepath=str(data_dir / "lxmf"), name="smoke")
+    router.register_delivery_identity(game_ident, display_name="smoke",
+                                      stamp_cost=0)
+    game_dest = RNS.Destination(game_ident, RNS.Destination.IN,
+                                RNS.Destination.SINGLE, "lxmf", "delivery")
+    router.register_delivery_callback(lambda msg: _on_message(router, msg))
+
+    (data_dir / DEST_JSON).write_text(json.dumps({
+        "page": RNS.prettyhash(page_dest.hash),
+        "games": {"smoke": RNS.prettyhash(game_dest.hash)},
+    }, indent=1))
+
+    page_dest.announce(app_data=name.encode())
+    game_dest.announce(app_data="smoke".encode())
+
+    print(f"smoke_host: serving on port {port}", file=sys.stderr, flush=True)
+    while True:
+        time.sleep(300)
+
+
+def _identity(data_dir, stem):
+    p = data_dir / "identities" / stem
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        return RNS.Identity.from_file(str(p))
+    ident = RNS.Identity()
+    ident.to_file(str(p))
+    return ident
+
+
+def _page(*args):
+    return (f">{NAME}\n>\nSMOKE-RIG\n").encode()
+
+
+def _on_message(router, message):
+    """Reply to a delivery. A non-validated sender gets the rejection
+    string — this is the assertion the smoke client checks (signature
+    validation must actually work, not just transport)."""
+    if not message.signature_validated:
+        reply = "[Rejected: unverified sender]"
+    else:
+        reply = "SMOKE-REPLY:" + (message.content_as_string() or "")
+    src = RNS.Identity.recall(message.source_hash)
+    if src is None:
+        return
+    dest = RNS.Destination(src, RNS.Destination.OUT,
+                           RNS.Destination.SINGLE, "lxmf", "delivery")
+    router.handle_outbound(LXMMessage(dest, content=reply.encode(),
+                                      title="smoke"))
+
+
+if __name__ == "__main__":
+    main()
+```
 
 `jclient/client.py`:
 
@@ -804,9 +947,15 @@ def cmd_smoke(a):
         print(f"page fetch failed: {page!r}", file=sys.stderr)
         return 1
     print(page.decode(errors="replace"), end="")
-    # 2) LXMF message -> delivery -> reply
-    c.send(unpretty(list(dests["games"].values())[0]), b"hello", "smoke")
-    print(c.wait_reply(set()), end="")
+    # 2) LXMF message -> delivery -> reply (assert it was *accepted*:
+    # the responder replies "SMOKE-REPLY:<content>" only when the sender
+    # signature validates — the highest-risk unknown, gated here)
+    c.send(unpretty(dests["games"]["smoke"]), b"hello", "smoke")
+    reply = c.wait_reply(set())
+    print(reply, end="")
+    if not reply.startswith("SMOKE-REPLY"):
+        print(f"\nunexpected smoke reply: {reply!r}", file=sys.stderr)
+        return 1
     print("\nSMOKE-OK")
     return 0
 
@@ -834,7 +983,7 @@ Expected: 1 PASS (may take 30–90 s — RNS startup + announce + path discovery
 - [ ] **Step 7: Commit**
 
 ```bash
-git add .gitignore tests/network/ jclient/
+git add .gitignore pyproject.toml tests/network/ jclient/
 git commit -m "test: RNS rig smoke (spec test 0) — real 1.5.0/1.1.1 loopback pairing green"
 ```
 (Include the `.gitignore` change: add `.venv/`.)
@@ -893,6 +1042,7 @@ class Host:
         self.routers = {}             # stem -> LXMRouter
         self.destinations = {}        # stem -> delivery Destination
         self.stories = {}             # stem -> story Path
+        self.versions = {}            # stem -> header version (read once)
         self.page_dest = None
 
     # ------------------------------------------------ lifecycle
@@ -960,17 +1110,16 @@ class Host:
         self.routers[stem] = router
         self.destinations[stem] = dl
         self.stories[stem] = story
+        # header bytes 0-1 = version (Phase 1 verified fact); read once,
+        # not per page render
+        with open(story, "rb") as f:
+            self.versions[stem] = int.from_bytes(f.read(2), "big")
 
     def _page_handler(self, *args):
         # (path, data, request_id, [link_id,] remote_identity, requested_at)
-        games = [(stem, self._version(stem), RNS.prettyhash(d.hash))
+        games = [(stem, self.versions[stem], RNS.prettyhash(d.hash))
                  for stem, d in sorted(self.destinations.items())]
         return render_page(self.name, games).encode()
-
-    def _version(self, stem):
-        # story header bytes 0-1 (Phase 1 verified fact)
-        data = Path(self.stories[stem]).read_bytes()
-        return int.from_bytes(data[0:2], "big")
 
     def _on_message(self, stem, msg):
         sender = msg.source_hash.hex()
@@ -1030,12 +1179,9 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 3: Re-run the smoke test against the real host**
+- [ ] **Step 3: Smoke-test the real host wiring**
 
-The Task 2 smoke test already spawns `python -m jhost` — it now exercises the full real host (page handler, LXMRouter, delivery callback, reply).
-
-Run: `.venv/bin/python -m unittest tests.network.test_netrig -v`
-Expected: 1 PASS
+`host.py`'s `_page_handler` / `_on_message` / `_identity` are the `tests/network/smoke_host.py` wiring moved into the `Host` class (already proven against 1.5.0/1.1.1 in Task 2); the real host's end-to-end behavior is gated by Task 5's network suite (tests 1–5, which spawn `python -m jhost`). The manual boot check (Step 4) is the immediate sanity gate for this task.
 
 - [ ] **Step 4: Manual boot check (10 seconds)**
 
@@ -1170,7 +1316,12 @@ def cmd_play(a):
     for line in sys.stdin:
         line = line.rstrip("\n")
         c.send(addr, line.encode(), "play")
-        reply = c.wait_reply({r for r in []} | set())  # see note below
+        # `prev` is the only reply string seen so far: each new reply is a
+        # strict extension of it (cumulative transcript), so it can never
+        # equal it. A rejection ("[Rejected…]", "[Game over]") doesn't
+        # start with prev and is a new string. No other message source
+        # exists on this delivery identity.
+        reply = c.wait_reply({prev} if prev else set(), timeout=120)
         # every reply is a cumulative transcript: print the increment
         new = reply[len(prev):] if reply.startswith(prev) else reply
         sys.stdout.write(new + "\n")
@@ -1191,11 +1342,14 @@ def cmd_smoke(a):
         print(f"page fetch failed: {page!r}", file=sys.stderr)
         return 1
     print(page.decode(errors="replace"), end="")
-    # pick a known-stable game (crashme is deliberately broken Z-code)
-    games = dests["games"]
-    stem = "planetfall" if "planetfall" in games else list(games)[0]
-    c.send(unpretty(games[stem]), b"hello", "smoke")
-    print(c.wait_reply(set()), end="")
+    # assert the reply was *accepted* (responder replies "SMOKE-REPLY:<…>"
+    # only when the sender signature validates)
+    c.send(unpretty(dests["games"]["smoke"]), b"hello", "smoke")
+    reply = c.wait_reply(set())
+    print(reply, end="")
+    if not reply.startswith("SMOKE-REPLY"):
+        print(f"\nunexpected smoke reply: {reply!r}", file=sys.stderr)
+        return 1
     print("\nSMOKE-OK")
     return 0
 
@@ -1217,14 +1371,6 @@ if __name__ == "__main__":
     {"scan": cmd_scan, "browse": cmd_browse, "play": cmd_play,
      "smoke": cmd_smoke}[a.cmd](a)
 ```
-
-Fix the `cmd_play` wait: `wait_reply` takes the set of reply strings already seen; in `play` that is just `{prev}` when `prev != ""` (each new reply extends the previous, so it can never equal it). Replace the marked line with:
-
-```python
-        reply = c.wait_reply({prev} if prev else set(), timeout=120)
-```
-
-**Why `{prev}` is a safe "seen" set:** the host's reply is always the cumulative transcript of that session (Task 1), strictly growing per turn; a rejected input (`[Rejected…]`, `[Game over]`) does not start with `prev` and is a new string. No other message source exists on this delivery identity.
 
 - [ ] **Step 3: Smoke-test the CLI manually (2 minutes, venv)**
 
