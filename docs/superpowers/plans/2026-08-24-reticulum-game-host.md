@@ -27,7 +27,7 @@
 
 ## Protocol decisions (plan-level, arguing from the spec)
 
-1. **Cumulative reply** (above): the session's transcript starts at its `load`/`restore` in this host process's lifetime. A *client* restart against a live host gets the full transcript back (session is in the in-memory map). A *host* restart gets the restored batch (prompt + status line) — the phone's message history keeps the older turns; spec §5 says exactly this ("reply = the restored batch's text (prompt + status line)").
+1. **Cumulative reply** (above): the session's transcript starts at its `load`/`restore` in this host process's lifetime. A *client* restart against a live host gets the full transcript back (session is in the in-memory map). A *host* restart restores the session from the save slot — the restored transcript is **empty** for a boundary save (verified engine behavior: the prompt cell was already emitted pre-park, so the phone's message history already shows it; see spec §5 note and the pre-Task-5 ruling in the SDD ledger).
 2. **Session map value:** `GameState(session, transcript)` — a dataclass, because the reply needs the accumulated text, not just the `Session`.
 3. **Two players, one game** = two independent `GameState` entries (session map is keyed `(game, sender)`; spec §5: "Two different identities: fully independent"). The two-players network test therefore asserts *each* player's final reply equals dfrotz of *that player's own* line sequence (same host seed), with alternating sends to exercise the lock — "no cross-talk".
 4. **Config scaffold is non-clobbering:** `write_rns_config` only writes when the config file is missing (an operator-edited config with testnet/LoRa sections survives restarts). Fresh temp dirs in tests always get the scaffold.
