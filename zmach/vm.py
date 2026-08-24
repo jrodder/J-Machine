@@ -26,6 +26,28 @@ from .strings import (char_to_zscii, decode_text, encode_text, read_custom_table
 _EXT_TRAILING = frozenset(
     {0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 19, 20, 21, 23, 24, 25, 27, 28})
 
+# frotz object-0 diagnostics (err.c err_messages[], errnum 19-32). frotz's
+# default ERR_REPORT_ONCE mode: errors <= 18 are fatal; 19-32 print a
+# "Warning: <msg> (PC = <hex>) (will ignore further occurrences)" line ONCE
+# per error number and the game continues. The PC is frotz's pcp at handler
+# entry (the store/branch byte address) == our self.pc at handler entry.
+_ERR_MESSAGES = {
+    19: "@jin called with object 0",
+    20: "@get_child called with object 0",
+    21: "@get_parent called with object 0",
+    22: "@get_sibling called with object 0",
+    23: "@get_prop_addr called with object 0",
+    24: "@get_prop called with object 0",
+    25: "@put_prop called with object 0",
+    26: "@clear_attr called with object 0",
+    27: "@set_attr called with object 0",
+    28: "@test_attr called with object 0",
+    29: "@move_object called moving object 0",
+    30: "@move_object called moving into object 0",
+    31: "@remove_object called with object 0",
+    32: "@get_next_prop called with object 0",
+}
+
 # ponytail: non-spec safety net so a bad story file can't hang a session;
 # raise only if a legitimate game trips it (a normal turn is far below this).
 INSTRUCTION_LIMIT = 10_000_000
@@ -114,6 +136,10 @@ class VM:
         self.done = False
         self.done_status = 0
         self.error = 0
+        # frotz object-0 warning state: once-per-error-number, and it
+        # persists across @restart (frotz init_err runs once per process,
+        # not per restart — so this lives in __init__, not _init).
+        self._err_warned = set()
         self.instrs = 0
         self.pc = 0
         self.pc_save = 0
@@ -137,6 +163,12 @@ class VM:
         """Input/output state; also reset by @restart via _init."""
         self.pending = None          # (inst, operands, nops, pc_save) blocked read
         self.input = InputBuffer(self.zscii_extra)
+        # read_char line buffer (frotz dumb os_read_key): holds the current
+        # line's chars, returned one at a time. A non-empty line's CR is
+        # stripped; an empty line yields a single CR (13). Empty when the
+        # game must block for the next line.
+        from collections import deque as _deque
+        self._rc_line_buf = _deque()
         # Output windows (text model, dfrotz -t parity): window 1 is the
         # status line. The 80-col buffer is PERSISTENT (the game updates it
         # in place); the line is emitted when its content changes, at the
@@ -425,7 +457,10 @@ class VM:
             else:
                 self.pc_save = self.pc
                 inst, operands, nops = self._decode()
-                if inst in (228, 246) and self.input.empty:
+                blocked = (inst == 228 and self.input.empty) or \
+                          (inst == 246 and not self._rc_line_buf
+                           and self.input.empty)
+                if blocked:
                     if inst == 228 and self.version < 4:
                         # frotz z_read_line (input.c): "Draw status line
                         # for V1 to V3 games" — redraw the status row
@@ -519,6 +554,17 @@ class VM:
         self.sp = f.sp
         self.pc = f.return_pc
         self.op_store(n)
+
+    def _warn(self, errnum):
+        """frotz object-0 diagnostic (ERR_REPORT_ONCE): print the warning
+        ONCE per error number, through the normal output stream (so it
+        wraps / MORE-pauses like game text). No effect on pc/store."""
+        if errnum in self._err_warned:
+            return
+        self._err_warned.add(errnum)
+        self._emit(f"Warning: {_ERR_MESSAGES[errnum]} "
+                   f"(PC = {self.pc & 0xFFFF:x}) "
+                   "(will ignore further occurrences)\n")
 
     # ------------------------------------------------- branches (2OP:1-7)
     def op_je(self, o, n):
@@ -747,27 +793,48 @@ class VM:
             self._set_obj_field(x, self._off_sibling, 0)
 
     def op_jin(self, o, n):
+        if (o[0] & 0xFFFF) == 0:
+            self._warn(19)
         self._predicate(self._get_parent(o[0] & 0xFFFF) == o[1] & 0xFFFF)
 
     def op_test_attr(self, o, n):
+        if (o[0] & 0xFFFF) == 0:
+            self._warn(28)
         fs = self._flagset(o[0] & 0xFFFF, o[1] & 0xFFFF)
         self._predicate(bool(fs) and bool(fs[2] & fs[1]))
 
     def op_set_attr(self, o, n):
+        if (o[0] & 0xFFFF) == 0:
+            self._warn(27)
         fs = self._flagset(o[0] & 0xFFFF, o[1] & 0xFFFF)
         if fs:
             self.mem.putw(fs[0], self.trunc(fs[2] | fs[1]))
 
     def op_clear_attr(self, o, n):
+        if (o[0] & 0xFFFF) == 0:
+            self._warn(26)
         fs = self._flagset(o[0] & 0xFFFF, o[1] & 0xFFFF)
         if fs:
             self.mem.putw(fs[0], self.trunc((fs[2] & ~fs[1]) & 0xFFFF))
 
     def op_insert_obj(self, o, n):
-        self._move_obj(o[0] & 0xFFFF, o[1] & 0xFFFF)
+        x, y = o[0] & 0xFFFF, o[1] & 0xFFFF
+        if x == 0:
+            self._warn(29)
+            return
+        if y == 0:
+            # frotz z_move_object: moving INTO object 0 is an error and a
+            # no-op (NOT a removal — that is @remove_object).
+            self._warn(30)
+            return
+        self._move_obj(x, y)
 
     def op_get_prop(self, o, n):
         obj, prop = o[0] & 0xFFFF, o[1] & 0xFFFF
+        if obj == 0:
+            self._warn(24)
+            self.op_store(0)
+            return
         f = self._propfind(obj, prop)
         if f:
             val = self.mem.getw(f[0]) if f[1] == 2 else self.mem.getb(f[0])
@@ -776,6 +843,8 @@ class VM:
         self.op_store(val)
 
     def op_get_prop_addr(self, o, n):
+        if (o[0] & 0xFFFF) == 0:
+            self._warn(23)
         f = self._propfind(o[0] & 0xFFFF, o[1] & 0xFFFF)
         self.op_store(f[0] if f else 0)
 
@@ -783,6 +852,9 @@ class VM:
         # VAR:227 put_prop object property value (dork PUTP): 2-byte slot ->
         # word write, else byte write; propfind miss -> byte to addr 0 (dork).
         obj, prop, val = o[0] & 0xFFFF, o[1] & 0xFFFF, o[2]
+        if obj == 0:
+            self._warn(25)
+            return
         f = self._propfind(obj, prop)
         if f and f[1] == 2:
             self.mem.putw(f[0], val)
@@ -792,6 +864,7 @@ class VM:
     def op_get_next_prop(self, o, n):
         obj = o[0] & 0xFFFF
         if obj == 0:
+            self._warn(32)
             self.op_store(0)
             return
         if o[1] & 0xFFFF:
@@ -804,16 +877,22 @@ class VM:
             self.op_store(self._prop_layout(first)[0] if self.mem.getb(first) else 0)
 
     def op_get_parent(self, o, n):
+        if (o[0] & 0xFFFF) == 0:
+            self._warn(21)
         self.op_store(self._get_parent(o[0] & 0xFFFF))
 
     def op_get_sibling(self, o, n):
         # 1OP:129 NEXT?: store result, then ?(label) branch if nonzero (ZSpec §14)
+        if (o[0] & 0xFFFF) == 0:
+            self._warn(22)
         x = self._get_sibling(o[0] & 0xFFFF)
         self.op_store(x)
         self._predicate(x != 0)
 
     def op_get_child(self, o, n):
         # 1OP:130 FIRST?: store result, then ?(label) branch if nonzero (ZSpec §14)
+        if (o[0] & 0xFFFF) == 0:
+            self._warn(20)
         x = self._get_child(o[0] & 0xFFFF)
         self.op_store(x)
         self._predicate(x != 0)
@@ -830,7 +909,11 @@ class VM:
             self.op_store(self._prop_layout(data - 2 if b1 & 0x80 else data - 1)[1])
 
     def op_remove_obj(self, o, n):
-        self._move_obj(o[0] & 0xFFFF, 0)
+        x = o[0] & 0xFFFF
+        if x == 0:
+            self._warn(31)
+            return
+        self._move_obj(x, 0)
 
     def op_print_obj(self, o, n):
         obj = o[0] & 0xFFFF
@@ -1188,6 +1271,16 @@ class VM:
             out.append(c + 32 if 65 <= c <= 90 else c)
         return out
 
+    def _read_screen_newline(self):
+        # frotz console_read_input: a normal (RETURN) read zeroes line_count
+        # then calls screen_new_line() — the cursor drops one row (clamped at
+        # the bottom, i.e. scrolling) and line_count becomes 1. Model that row
+        # so the ***MORE*** count and the physical row layout match dfrotz.
+        # (No text is emitted for it; it only moves the cursor.)
+        self._row = min(self._row + 1, 23)
+        self._line_count = 1
+        self._col = 0
+
     def op_read(self, o, n):
         # VAR:228: v3 sread text parse (no store); v5 aread text parse
         # time routine -> (result). Timers are unsupported: the v4+
@@ -1200,7 +1293,7 @@ class VM:
         t1 = o[0] & 0xFFFF
         t2 = o[1] & 0xFFFF
         codes = self._consume_line()
-        self._line_count = 0  # frotz console_read_input: zero all counters
+        self._read_screen_newline()  # frotz console_read_input post-read newline
         if self.version >= 5:
             # byte0 = max chars; byte1 = count written; chars at byte2..
             # Leftover rule: byte1 > 0 on entry = chars left from an
@@ -1227,11 +1320,30 @@ class VM:
             self._tokenise(t1, t2)
 
     def op_read_char(self, o, n):
-        # VAR:246: one keypress -> its ZSCII code (13 = CR). o[0] must be
-        # 1 (keyboard); v4+ o[1], o[2] = timer (unsupported; evaluated at
+        # VAR:246: one keypress -> its ZSCII code. o[0] must be 1
+        # (keyboard); v4+ o[1], o[2] = timer (unsupported; evaluated at
         # decode time like aread's).
-        v = self.input.get()
-        self._line_count = 0  # frotz console_read_key: zero all counters
+        # frotz dumb os_read_key (dinput.c): when its per-line buffer is
+        # empty it reads a WHOLE line and strips the CR, then returns the
+        # line's chars one at a time. An empty line (CR with no prior char)
+        # yields a single CR (13). The block condition (run_until_input)
+        # only parks read_char when BOTH this buffer and the input queue
+        # are empty, so here the input queue has at least one line.
+        if not self._rc_line_buf:
+            line = []
+            c = 0
+            while True:
+                c = self.input.get()
+                if c in (0, 13):
+                    break
+                line.append(c)
+            if line:
+                self._rc_line_buf.extend(line)
+            elif c == 13:
+                # empty line: we consumed its CR; yield it as 13
+                self._rc_line_buf.append(13)
+        v = self._rc_line_buf.popleft() if self._rc_line_buf else 0
+        self._read_screen_newline()  # frotz console_read_key post-read newline
         self.op_store(v)
 
     def _tokenise(self, t1, t2):
@@ -1394,6 +1506,26 @@ class VM:
 
     def op_print_num(self, o, n):
         self._emit(str(o[0]))
+
+    def op_print_unicode(self, o, n):
+        # EXT 11 (v4+): print a Unicode char. frotz z_print_unicode:
+        # zargs[0] < 0x20 -> '?', else print_char(zargs[0]). No result.
+        cp = o[0] & 0xFFFF
+        self._emit("?" if cp < 0x20 else chr(cp))
+
+    def op_check_unicode(self, o, n):
+        # EXT 12 (v4+): report whether a Unicode char can be printed (bit 0)
+        # and read (bit 1). frotz z_check_unicode (dumb terminal, USE_UTF8
+        # build): 0x20-0x7e -> 3 (print+read); 0xa0 -> 1 (print); c >= 0xa1
+        # -> mask & os_check_unicode, and dumb os_check_unicode returns 1, so
+        # -> 1; else 0. Result goes to the trailing store byte.
+        c = o[0] & 0xFFFF
+        if 0x20 <= c <= 0x7E:
+            self.op_store(3)
+        elif c >= 0xA0:
+            self.op_store(1)
+        else:
+            self.op_store(0)
 
     # ------------------------------------------------- misc / no-ops
     def op_new_line(self, o, n):
@@ -1595,6 +1727,8 @@ class VM:
             ops.EXT_BASE + 2: self.op_log_shift,
             ops.EXT_BASE + 3: self.op_art_shift,
             ops.EXT_BASE + 4: self.op_set_font,
+            ops.EXT_BASE + 11: self.op_print_unicode,
+            ops.EXT_BASE + 12: self.op_check_unicode,
         }
         if self.version < 5:
             # v1-v4 forms (ZSpec §14 version columns)

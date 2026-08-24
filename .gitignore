@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 zmach-save.bin
+
+# conformance-test save artifacts
+*.mem
+*.mem.aux
