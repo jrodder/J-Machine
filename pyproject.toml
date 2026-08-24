@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "j-machine"
+version = "0.2.0"
+description = "Z-machine interpreter and Reticulum game host"
+requires-python = ">=3.10"
+dependencies = [
+    "rns>=1.5,<1.6",
+    "lxmf>=1.1,<1.2",
+]
+
+[tool.setuptools.packages.find]
+include = ["zmach*", "jhost*", "jclient*"]

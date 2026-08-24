@@ -180,11 +180,15 @@ def render_page(name, games):
 
 def write_rns_config(config_dir, role, port=4242, instance_name=None,
                      overwrite=False):
-    """Scaffold a minimal RNS 1.5 config (format verified, spec §2).
-    role "host" -> loopback TCPServerInterface; "client" ->
-    TCPClientInterface to 127.0.0.1:port. Non-clobbering: an
-    operator-edited config (testnet/LoRa sections) survives restarts.
-    Returns the config path."""
+    """Scaffold a minimal RNS 1.5 config. role "host" -> loopback
+    TCPServerInterface; "client" -> TCPClientInterface to
+    127.0.0.1:port. RNS 1.5.0 parses interfaces from a top-level
+    [interfaces] section with nested [[name]] subsections (verified
+    against site-packages/RNS/Reticulum.py and the wheel's default
+    config); [logging] takes loglevel (file logging keys from older
+    releases no longer exist). Non-clobbering: an operator-edited
+    config (testnet/LoRa sections) survives restarts. Returns the
+    config path."""
     config_dir = Path(config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
     path = config_dir / "config"
@@ -192,21 +196,20 @@ def write_rns_config(config_dir, role, port=4242, instance_name=None,
         return path
     inst = instance_name or f"jmachine-{role}-{uuid.uuid4().hex[:8]}"
     if role == "host":
-        ifc = ("[[LAN TCP Server]]\ntype = TCPServerInterface\n"
-               "enabled = yes\n"
-               f"listen_ip = 127.0.0.1\nlisten_port = {port}\n")
+        ifc = ("    [[LAN TCP Server]]\n    type = TCPServerInterface\n"
+               "    enabled = yes\n"
+               f"    listen_ip = 127.0.0.1\n    listen_port = {port}\n")
     else:
-        ifc = ("[[TCP Client]]\ntype = TCPClientInterface\n"
-               "enabled = yes\n"
-               f"target_host = 127.0.0.1\ntarget_port = {port}\n")
+        ifc = ("    [[TCP Client]]\n    type = TCPClientInterface\n"
+               "    enabled = yes\n"
+               f"    target_host = 127.0.0.1\n    target_port = {port}\n")
     path.write_text(
         "[reticulum]\n"
         "enable_transport = yes\n"
         "share_instance = yes\n"
         f"instance_name = {inst}\n\n"
-        f"{ifc}\n"
-        "[[Logging]]\n"
-        "log_to_file = yes\n"
-        f"log_file = {config_dir / 'rns.log'}\n"
-        "log_level = 5\n")
+        "[logging]\n"
+        "loglevel = 5\n\n"
+        "[interfaces]\n\n"
+        f"{ifc}\n")
     return path

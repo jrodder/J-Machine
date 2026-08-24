@@ -186,7 +186,7 @@ class Helpers(unittest.TestCase):
             c = write_rns_config(d + "/clientcfg", "client")
             ht, ct = h.read_text(), c.read_text()
             for k in ("type = TCPServerInterface", "listen_port = 4242",
-                      "share_instance = yes", "[[Logging]]"):
+                      "share_instance = yes", "[interfaces]", "[logging]"):
                 self.assertIn(k, ht)
             for k in ("type = TCPClientInterface", "target_port = 4242"):
                 self.assertIn(k, ct)

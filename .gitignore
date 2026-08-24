@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+.venv/
+j_machine.egg-info/
 zmach-save.bin
 
 # conformance-test save artifacts
