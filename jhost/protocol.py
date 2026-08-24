@@ -203,10 +203,13 @@ def write_rns_config(config_dir, role, port=4242, instance_name=None,
         ifc = ("    [[TCP Client]]\n    type = TCPClientInterface\n"
                "    enabled = yes\n"
                f"    target_host = 127.0.0.1\n    target_port = {port}\n")
-    # client stdout is a data contract (spec §7: norm(stdout) == session
-    # transcript) — scaffold it silent: LOG_NONE (-1) makes RNS.log() a
-    # no-op (site-packages/RNS/__init__.py:65/127). Host keeps verbose:
-    # its stdout is not a data contract (Task 3 ruling).
+    # client stdout is a data contract (spec §7: norm(stdout) ==
+    # session transcript) — scaffold it silent. NOTE: RNS 1.5.0 clamps
+    # the config loglevel to 0..8 at parse time (RNS/Reticulum.py:468),
+    # so the -1 value documents intent and clamps harmlessly to 0
+    # (LOG_CRITICAL); the actual silencing is the runtime override in
+    # Client.__init__ (RNS.loglevel = RNS.LOG_NONE). Host keeps verbose
+    # (5): its stdout is not a data contract (Task 3 ruling).
     loglevel = 5 if role == "host" else -1
     path.write_text(
         "[reticulum]\n"

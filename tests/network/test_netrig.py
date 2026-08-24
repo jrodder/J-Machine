@@ -20,6 +20,19 @@ except ImportError:
 
 @unittest.skipUnless(HAVE_RNS, "rns/lxmf not installed (pip install rns lxmf)")
 class Smoke(unittest.TestCase):
+    def test_client_loglevel(self):
+        # Task 4 fix round 2 regression guard: the scaffolded config
+        # loglevel=-1 is clamped to 0 (LOG_CRITICAL) at parse time
+        # (site-packages/RNS/Reticulum.py:468), so silence must come from
+        # the runtime override in Client.__init__ (RNS.loglevel =
+        # RNS.LOG_NONE). The client stdout is the session transcript
+        # (spec §7); one log line would pollute it. port=4243: no host —
+        # this test exercises the loglevel, not the transport.
+        from jclient.client import Client
+        with tempfile.TemporaryDirectory() as d:
+            Client(d, str(Path(d) / "identity"), port=4243)
+        self.assertEqual(RNS.loglevel, RNS.LOG_NONE)
+
     def test_smoke(self):
         from tests.network import netrig
         with tempfile.TemporaryDirectory() as d:

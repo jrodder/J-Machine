@@ -29,6 +29,13 @@ class Client:
         self.ident = load_identity(identity_path)
         cfg_dir = write_rns_config(self.data_dir / "rns", "client", port).parent
         RNS.Reticulum(str(cfg_dir))
+        # The config loglevel=-1 is clamped to 0 (LOG_CRITICAL) at parse
+        # time (site-packages/RNS/Reticulum.py:468) and LOG_NONE is not
+        # reachable via the 1.5.0 constructor either (Reticulum.py:315) —
+        # the runtime override is required. The client's stdout is a data
+        # contract (spec §7: norm(stdout) == session transcript); one log
+        # line would pollute it.
+        RNS.loglevel = RNS.LOG_NONE
         self.router = LXMRouter(identity=self.ident,
                                 storagepath=str(self.data_dir / "lxmf"),
                                 name=name)
