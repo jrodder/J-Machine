@@ -72,9 +72,12 @@ class VM:
         self.globals_base = h.globals_base
         self.obj_size = 9 if self.version == 3 else 14
         # Object table (ZSpec §12.3): v3 = 9-byte entries, v4+ = 14-byte.
-        # Header word 0x0A holds the property-defaults table start; the object
-        # table (slot N at base + N*obj_size, slot 0 = object 0 = zeros) sits
-        # right after the 31/63 default words (mirrors dork's init formula).
+        # Header word 0x0A holds the property-defaults table start (31/63
+        # words); the object entries begin 62 bytes on MINUS obj_size, i.e.
+        # entry #1 overlaps the last obj_size bytes of the defaults region
+        # (v3: defaults words 28-30 sit inside object 1's entry — standard
+        # Z-machine layout, mirrors dork's init formula; object 0 is never
+        # dereferenced, all accessors short-circuit on it).
         self.objects_base = h.objects + 2 * (31 if self.version == 3 else 63) \
             - self.obj_size
         self._off_parent = 4 if self.version == 3 else 6

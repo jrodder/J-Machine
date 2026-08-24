@@ -67,9 +67,12 @@ class TestZork1Objects(unittest.TestCase):
         self.assertEqual(vm.get_prop(160, 16), 0xF4)          # 1-byte, zero-extended
         self.assertEqual(vm.get_prop(160, 10), 0x000A)        # 2-byte
         self.assertEqual(vm.get_prop(160, 17), 0x6E94)
-        # missing property falls back to the defaults table
-        self.assertEqual(vm.get_prop(160, 3),
-                         vm.mem.getw(vm.defprop + 2 * 3))
+        # missing property -> defaults table. defprop = h.objects - 2 =
+        # 0x02AE; file facts: word 0 = 0x00F5 (packed "You're " pointer),
+        # word 15 = 0x0005, words 1-14/16-30 = 0x0000. Mailbox has no prop 15.
+        self.assertEqual(vm.defprop, 0x02AE)
+        self.assertEqual(vm.mem.getw(vm.defprop), 0x00F5)
+        self.assertEqual(vm.get_prop(160, 15), 0x0005)
         # get_prop_addr: v3 returns the data address; 0 for missing
         self.assertGreater(vm.get_prop_addr(160, 16), 0)
         self.assertEqual(vm.get_prop_addr(160, 3), 0)
