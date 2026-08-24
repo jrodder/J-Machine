@@ -1458,53 +1458,47 @@ zmach story.z5 [--strict] [--seed <int>] [--save <file>] [--restore <file>]
 - `--save`/`--restore`: save after load / restore before running (API path).
 - Exit codes: 0 normal/EndOfGame, 1 `StoryFileError`/`SaveFileError` (clean message, no traceback).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
-```python
-# tests/test_cli.py
-import subprocess, unittest
-from pathlib import Path
+**Plan-test corrections (documented in task-11-report + tests/test_cli.py
+header):**
+- `test_meta_save_restore` asserted save size > 500000 for zork1: zork1's
+  memory is 84876 + 8192-word v3 stack = 101260 bytes (ZMSAVE images are
+  story+stack sized, not the spec's 512 KB) -> assert > 100000. (risorg
+  is 705384 and would pass 500000.)
+- "Prompt -> print '> '" is dropped: the VM's byte stream ALREADY
+  contains the prompt cell at each seam (byte-exact dfrotz -t parity —
+  the batch ends in '>' or 'quit? '); printing again would double it.
+  The REPL prints the stream verbatim.
+- risorg consumes one startup line before its intro (dfrotz does the
+  same), so the in-game handler test script starts with a blank line.
+- Added beyond the plan: in-game save/restore OPCODE handler test
+  (risorg SAVE/RESTORE verbs, piped mode), --save/--restore flags,
+  @info, bad-@restore exit code 1, unknown-@ command.
 
-C = Path(__file__).parent / "corpus"
+- [x] **Step 2: Run, verify FAIL** (9 tests; 7 fail — no `zmach.__main__`)
 
-class TestCli(unittest.TestCase):
-    def test_scripted_run(self):
-        p = subprocess.run(
-            ["python3", "-m", "zmach", str(C / "zork1.z3"), "--seed", "10"],
-            input="look\nopen mailbox\n@quit\n", capture_output=True,
-            text=True, timeout=60, cwd=Path(__file__).parent.parent)
-        self.assertEqual(p.returncode, 0)
-        self.assertIn("ZORK I: The Great Underground Empire", p.stdout)
-        self.assertIn("Opening the small mailbox reveals a leaflet.", p.stdout)
+- [x] **Step 3: Implement cli.py + __main__.py**
 
-    def test_bad_story_clean_exit(self):
-        p = subprocess.run(["python3", "-m", "zmach", "/nonexistent.z5"],
-                           capture_output=True, text=True, timeout=30,
-                           cwd=Path(__file__).parent.parent)
-        self.assertEqual(p.returncode, 1)
-        self.assertNotIn("Traceback", p.stderr)
+  - `zmach/cli.py`: argparse (`story`, `--strict` = StoryFile checksum
+    verify, `--seed`, `--save`, `--restore`), REPL printing the byte
+    stream verbatim, meta commands @save/@restore/@info/@quit, in-game
+    save/restore handlers (prompt on stderr + one stdin line = filename,
+    hint = default; the line is consumed by the handler, not the game),
+    exit 0/1 with clean messages.
+  - `zmach/__main__.py`: `sys.exit(main())`.
+  - `Session`: `load(path, seed, strict)` (strict threaded to
+    StoryFile.load); `restore_image(image)` = decode-only (no run) for
+    the in-game @restore handler — the VM is mid-turn and keeps running
+    after the handler returns; handlers may be set before `load`
+    (pending handlers applied at VM creation).
+  - `StoryFile.load`: unreadable file -> `StoryFileError` (was leaking
+    FileNotFoundError -> traceback).
 
-    def test_meta_save_restore(self):
-        save = Path("/tmp/cli_test.zsave")
-        p = subprocess.run(
-            ["python3", "-m", "zmach", str(C / "zork1.z3"), "--seed", "10"],
-            input="look\n@save %s\nlook\n@quit\n" % save,
-            capture_output=True, text=True, timeout=60,
-            cwd=Path(__file__).parent.parent)
-        self.assertEqual(p.returncode, 0)
-        self.assertTrue(save.exists())
-        self.assertGreater(save.stat().st_size, 500000)  # ZMSAVE v1 size
-```
+- [x] **Step 4: Run, verify PASS** — 9 new tests (tests/test_cli.py);
+  full suite 100/100 under `ulimit -v 1572864`.
 
-- [ ] **Step 2: Run, verify FAIL**
-
-- [ ] **Step 3: Implement cli.py + __main__.py**
-
-- [ ] **Step 4: Run, verify PASS**
-
-Run: `python3 -m unittest tests.test_cli -v`
-
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 `git add -A && git commit -m "feat: CLI REPL with meta commands and clean error exits"`
 

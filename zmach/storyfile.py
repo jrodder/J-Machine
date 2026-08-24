@@ -55,7 +55,10 @@ class StoryFile:
 
     @staticmethod
     def load(path, strict=False):
-        raw = Path(path).read_bytes()
+        try:
+            raw = Path(path).read_bytes()
+        except OSError as e:
+            raise StoryFileError(f"cannot read story file: {path} ({e.strerror or e})") from None
         if len(raw) < 64:
             raise StoryFileError(f"not a story file (too short): {path}")
         ver = raw[0]

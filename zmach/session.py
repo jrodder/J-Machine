@@ -28,12 +28,15 @@ class Session:
     def __init__(self):
         self._vm = None
         self._story_info = None
+        # handlers may be installed before load (the CLI does)
+        self._save_handler = None
+        self._restore_handler = None
 
     # ------------------------------------------------ lifecycle
-    def load(self, path, seed=None):
+    def load(self, path, seed=None, strict=False):
         """Load a story file and run to the first Prompt/EndOfGame."""
         try:
-            story = StoryFile.load(path)
+            story = StoryFile.load(path, strict=strict)
         except StoryFileError:
             raise
         data = story.data
@@ -45,6 +48,10 @@ class Session:
             file_sha256=hashlib.sha256(data).digest(),
         )
         self._vm = VM(story, seed=seed)
+        if self._save_handler is not None:
+            self._vm.save_handler = self._save_handler
+        if self._restore_handler is not None:
+            self._vm.restore_handler = self._restore_handler
         return self._run_to_boundary()
 
     # ------------------------------------------------ input/output
@@ -78,17 +85,24 @@ class Session:
         Identity mismatch (different story file) raises SaveFileError."""
         vm = self._require_vm()
         savefile.decode(vm, image)
-        if vm.done or not vm.needs_input:
-            # e.g. restored a finished game: no read to block on
-            return self._run_to_boundary()
         return self._run_to_boundary()
+
+    def restore_image(self, image):
+        """Decode-only restore (no run): for the in-game @restore opcode
+        handler — the VM is mid-turn and keeps running after it returns.
+        Raises SaveFileError."""
+        savefile.decode(self._require_vm(), image)
 
     # ------------------------------------------------ handlers / info
     def set_save_handler(self, cb):
-        self._require_vm().save_handler = cb
+        self._save_handler = cb
+        if self._vm is not None:
+            self._vm.save_handler = cb
 
     def set_restore_handler(self, cb):
-        self._require_vm().restore_handler = cb
+        self._restore_handler = cb
+        if self._vm is not None:
+            self._vm.restore_handler = cb
 
     @property
     def story(self):
