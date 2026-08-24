@@ -55,7 +55,7 @@
   - `write_rns_config(config_dir, role, port=4242, instance_name=None, overwrite=False) -> Path` — `role` `"host"`|`"client"`; returns the config path; does not overwrite an existing config unless `overwrite=True`
   - Reply constants (exact strings): `"[Rejected: unverified sender]"`, `"[Input rejected: line too long (>200)]"`, `"[Game over]"`, `"[Game unavailable]"` (story file unreadable at first contact — a robustness addition beyond spec §4's table)
 
-- [ ] **Step 1: Write the failing tests** — `tests/test_protocol.py`
+- [x] **Step 1: Write the failing tests** — `tests/test_protocol.py`
 
 ```python
 """Spec §7 tests 6-7: protocol edge-behavior table + save sanity.
@@ -254,11 +254,11 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `python3 -m unittest tests.test_protocol -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'jhost'`
-- [ ] **Step 3: Implement `jhost/__init__.py` (empty) and `jhost/protocol.py`**
+- [x] **Step 3: Implement `jhost/__init__.py` (empty) and `jhost/protocol.py`**
 
 ```python
 """Pure host protocol (spec §4) — no RNS/LXMF imports; unit-testable with
@@ -475,17 +475,17 @@ def write_rns_config(config_dir, role, port=4242, instance_name=None,
     return path
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `python3 -m unittest tests.test_protocol -v`
 Expected: 15 PASS
 
-- [ ] **Step 5: Run the full suite (no regressions)**
+- [x] **Step 5: Run the full suite (no regressions)**
 
 Run: `python3 -m unittest discover -s tests`
 Expected: all green (Phase 1 count + 15)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add jhost/ tests/test_protocol.py
@@ -1817,3 +1817,5 @@ git commit -m "docs: Phase 2 done-bar gate + operator/deployment README"
 | §9 decisions (pins, global lock, stamps 0, no dedup, test client built) | Global Constraints + ponytail comments in Task 1/3 code |
 
 **Placeholder scan:** none — every step carries runnable code/commands. **Type consistency:** `handle_message`/`GameState`/`SaveStore` signatures used identically in Tasks 1/3/5; `netrig` helper names used identically in Tasks 2/5; `Client`/`parse_page`/`unpretty` consistent across Tasks 2/4/5. One deliberate runtime check flagged in-plan: `RNS.Destination.hash(identity, ...)` vs `ident.public_key` (Task 4 `scan` — verify against venv source; the verified-fact cites the pattern, the exact first-argument type is confirmed at runtime).
+
+**Task 1 deviations (verified by owner, 2026-08-24):** test_done_session + "y" (planetfall quit Y/N); test_ingame_save_restore "more" (seed-10 risorg intro parks at ***MORE***); test_autosave_roundtrip norm(ref) symmetry + p.close(); _render uses Error.message (verified field name). zmach/vm.py pending tuple now carries park-time pc (latent bug reproduced: old vm.py -> error 1 halt on in-game restore; fix verified required, no-op in existing flows, 124/124 green incl. byte-exact conformance).
