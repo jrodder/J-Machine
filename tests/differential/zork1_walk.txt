@@ -1,0 +1,120 @@
+s
+e
+open window
+enter house
+w
+get lamp
+move rug
+open trap door
+turn on the lamp
+d
+s
+e
+get painting
+n
+u
+u
+get knife and rope
+d
+w
+open case
+put painting in case
+drop knife
+get sword
+open trap door
+d
+save
+n
+kill troll with sword
+kill troll with sword
+kill troll with sword
+kill troll with sword
+drop sword
+e
+e
+se
+e
+tie rope to railing
+climb down rope
+s
+e
+get coffin
+w
+s
+pray
+turn off the lamp
+s
+n
+e
+d
+n
+drop coffin
+open coffin
+get sceptre
+wave sceptre
+look
+get gold and coffin
+sw
+u
+nw
+w
+enter house
+open bag
+get garlic
+w
+put coffin in case
+put sceptre in case
+put gold in case
+save
+open trap door
+turn on lamp
+d
+n
+e
+n
+ne
+e
+n
+get matches
+n
+get wrench and screwdriver
+push yellow button
+s
+s
+turn the bolt with the wrench
+s
+d
+w
+se
+e
+climb down rope
+get the torch
+turn off lamp
+s
+get the bell, book, and candles
+go hole
+d
+ring the bell
+light match
+light the candles with the match
+read the book
+drop book
+s
+get skull
+n
+u
+n
+put out candles
+rub mirror
+n
+w
+n
+w
+n
+e
+put torch in basket
+turn on lamp
+n
+d
+save
+e
