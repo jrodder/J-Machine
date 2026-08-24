@@ -161,7 +161,7 @@ class VM:
 
     def _init_io_state(self):
         """Input/output state; also reset by @restart via _init."""
-        self.pending = None          # (inst, operands, nops, pc_save) blocked read
+        self.pending = None          # (inst, operands, nops, pc_save, pc) blocked read
         self.input = InputBuffer(self.zscii_extra)
         # read_char line buffer (frotz dumb os_read_key): holds the current
         # line's chars, returned one at a time. A non-empty line's CR is
@@ -440,7 +440,11 @@ class VM:
         A read blocked on empty input is parked in self.pending (fully
         decoded operands — the timer-routine call side effects of aread
         must happen exactly once); feed() + run_until_input resumes it
-        without re-decoding."""
+        without re-decoding. The park-time pc (the read's trailing store
+        byte) is carried too: a mid-turn state restore (restore_image)
+        can advance pc before the next resume, and the read's own
+        op_store must consume the store byte exactly once — from the
+        park position, not from wherever the restored flow left pc."""
         self.needs_input = False
         while not (self.done or self.needs_input):
             self.instrs += 1
@@ -452,7 +456,7 @@ class VM:
                 if self.input.empty:  # still nothing to read: keep parked
                     self.needs_input = True
                     return
-                inst, operands, nops, self.pc_save = self.pending
+                inst, operands, nops, self.pc_save, self.pc = self.pending
                 self.pending = None
             else:
                 self.pc_save = self.pc
@@ -469,7 +473,8 @@ class VM:
                         # re-emit the status row).
                         self._emit_v3_status()
                     self._before_read()
-                    self.pending = (inst, operands, nops, self.pc_save)
+                    self.pending = (inst, operands, nops, self.pc_save,
+                                    self.pc)
                     self.needs_input = True
                     return
             handler = self._handlers.get(inst)
