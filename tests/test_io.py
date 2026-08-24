@@ -88,6 +88,50 @@ class TestIoDifferential(unittest.TestCase):
         self.assertIn("The ambassador offers you a bit of celery.", ours)
 
 
+class TestPlanetfallByteExact(unittest.TestCase):
+    """Byte-exact dfrotz -t conformance on a v5 game (flush model must
+    hold across versions, not just v8/v3).
+
+    The discriminating case is the "examine sky" turn: the status line
+    text is identical to the previous turn (Time: 4510, no score change)
+    and planetfall's library re-writes it directly (no space-clear), so
+    frotz's dumb_set_cell sees NO changed cell and the status row is NOT
+    re-emitted — the bare prompt row merges straight into the response:
+    'celery.\n\n>[I don\'t know the word "sky."]'. risorg's Inform-6
+    library clears the row with printed spaces first, so its identical
+    re-write DOES re-emit (see TestRisorgByteExact).
+    """
+
+    LINES = ["look", "north", "examine sky", "quit", "yes"]
+
+    @staticmethod
+    def _ref(lines):
+        ref = dfrotz_transcript(C / "planetfall.z5", lines, seed=SEED)
+        return ref.split("\n", 2)[2]  # strip dfrotz's startup banner
+
+    def test_short_session_bytes(self):
+        self.assertEqual(transcript(C / "planetfall.z5", self.LINES),
+                         self._ref(self.LINES))
+
+    def test_identical_status_not_reemitted(self):
+        out = transcript(C / "planetfall.z5",
+                         ["look", "north", "examine sky"])
+        self.assertIn('celery.\n\n>[I don\'t know the word "sky."]', out,
+                      "identical status line must not be re-emitted at the"
+                      " 'examine sky' seam (no changed cell)")
+
+    def test_intro_no_blank_after_status(self):
+        # The intro content starts at the main-window top, directly below
+        # the status row, so the byte stream has NO blank line between
+        # them (unlike the command seams, where the cursor is far below).
+        out = transcript(C / "planetfall.z5", [])
+        i = out.find("PLANETFALL")
+        self.assertGreater(i, 0)
+        self.assertNotIn("\n\nPLANETFALL", out[:i + 100],
+                         "intro must follow the status row without a blank")
+        self.assertIn("Time: 4494\nPLANETFALL", out)
+
+
 class TestInputBuffer(unittest.TestCase):
     def test_feed_get_empty(self):
         b = InputBuffer()

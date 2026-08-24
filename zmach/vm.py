@@ -66,9 +66,12 @@ class VM:
         self.mem = Memory(story)
         h = story.header
         self.version = h.version
-        self.width = self.mem.width  # word size in bytes (2 / v8: 8)
         self.screen_width = 80  # frotz -t default; status line is 80 cols
-        self.trunc = s64 if self.version == 8 else s16
+        # frotz 2.55: 16-bit values in ALL versions (v8 included — the
+        # installed dfrotz runs v8 on the v7 instruction set; no ZNE 64-bit
+        # words). Width is fixed at 2 bytes.
+        self.width = 2
+        self.trunc = s16
         self.pack_mult = h.length_divisor
         self.globals_base = h.globals_base
         self.obj_size = 9 if self.version == 3 else 14
@@ -90,7 +93,7 @@ class VM:
         self.seed0 = (seed & 0xFFFFFFFF) if seed is not None \
             else int.from_bytes(os.urandom(4), "big")
         self.seed = self.seed0
-        self.flags2 = h.flags2 & ~0x10  # bit 4 (undo) unsupported -> cleared
+        self.flags2 = h.flags2  # header flags as written back by dfrotz -t
         self.events = []
         self.needs_input = False
         self.done = False
@@ -127,15 +130,49 @@ class VM:
         self._status = [" "] * 80
         self._status_col = 0
         self._status_dirty = False
-        self._last_status = None
+        # frotz dumb_set_cell marks a cell changed only when the written
+        # cell actually DIFFERS from what is on the row, so the status
+        # row is re-emitted at a seam only if some cell really changed
+        # since the row's last emission (or the start, when the row was
+        # blank). Games that clear the row with printed spaces before
+        # re-writing it (Inform 6's ShowStatusLine) therefore re-emit
+        # even on identical text; direct identical re-writes (frotz's
+        # v3 z_show_status redraw, planetfall's library) emit nothing.
+        self._status_changed = False
+        self._status_ref = [" "] * 80  # last on-screen row content
         # dfrotz -t screen model (COMPRESSION_SPANS): main-window lines are
-        # buffered per line and flushed at each read; a bare `>` (the game's
-        # read prompt, written at column 0) as the last line is emitted
-        # without a newline so it merges into the next flush's first line
+        # buffered per line and flushed at each read; the cursor row (the
+        # last row written before the read) is emitted bare (no newline)
+        # by the prompt path and merges into the next flush's first line
+        # ('> <status>' in the byte stream).
         # (frotz dumb_show_prompt has no trailing newline).
         self._lines = []
         self._line = ""
         self._col = 0
+        # dfrotz -t MORE model (frotz screen.c): the 24-row screen has
+        # the cursor at the bottom after each newline, so the prompt fires
+        # when line_count reaches above + below - 1 = (23-1) + (24-23+1)
+        # - 1 = 23; the prompt line is read and discarded
+        # (dumb_read_misc_line). line_count resets to 0 after EVERY
+        # consumed input line (screen.c console_read_input/console_read_key
+        # zero all window counters), after erase_window/erase_screen, and
+        # after a MORE prompt. frotz 2.55 has no set_line_count opcode,
+        # so the counter is interpreter-internal.
+        self._line_count = 0
+        self._more_pending = False
+        self._at_more = False
+        # Cursor row within the main window (0-based; 0 = the row just
+        # below the status row). frotz's implicit bottom-row scroll keeps
+        # the cursor on the last row, so the row only grows (clamped). A
+        # content row is adjacent to the status row only when its batch
+        # started at the window top (_batch_row snapshots _row when the
+        # current line buffer starts, i.e. at the last flush).
+        self._row = 0
+        self._batch_row = 0
+        # Unemitted tail of a text batch that was still pending when the
+        # MORE threshold hit (frotz pauses the machine mid-stream; the
+        # remaining characters print AFTER the prompt is answered).
+        self._emit_rest = ""
         # Output stream 3 (ZSpec §7.1.2.1): captures text into a memory
         # table; nothing reaches the screen while selected.
         self._stream3 = False
@@ -147,6 +184,11 @@ class VM:
         """Header-byte initialization per ZSpec Appendix B (mirrors dork).
         Used for both first start and @restart (memory is reset first)."""
         m, h = self.mem, self.story.header
+        # dfrotz -t writes the interpreter's self-description into the
+        # header area at startup (os_init_screen + restart_header); the
+        # game may read these raw header addresses with @loadw/@loadb
+        # (e.g. I6 reads the word at 50 = the interpreter's Z-machine
+        # standard version, and the flags word at 16).
         if self.version == 3:
             # v3 header byte 1 = story config bits (dfrotz: CONFIG_TANDY 0x08
             # etc.). Our oracle runs `dfrotz -t`, whose OS layer does
@@ -154,19 +196,28 @@ class VM:
             # os_init_screen) — mirror that; keep all other file bits as-is.
             m.putb(1, m.getb(1) | 0x08)
         else:
-            m.putb(1, 0x1D if self.version >= 5 else 0x1C)
+            # CONFIG_TIMEDINPUT: dumb input with default speed != 0 (dinput.c)
+            m.putb(1, m.getb(1) | 0x80)
+            # INTERP_DEC_20 for non-v6 (dinit.c os_init_screen)
             m.putb(30, 1)   # interpreter number (dfrotz parity: banner prints "Interpreter 1")
             m.putb(31, 0x46)  # interpreter version letter 'F'
-            m.putb(32, 25)  # screen height
+            m.putb(32, 24)  # screen height (dfrotz dumb port: 24 rows)
             m.putb(33, 80)  # screen width
             if self.version >= 5:
                 m.putw(34, 80)
-                m.putw(36, 25)
+                m.putw(36, 24)
                 m.putb(38, 1)
                 m.putb(39, 1)
-                m.putb(44, 9)
-                m.putb(45, 2)
-        m.putw(16, self.flags2)
+                m.putb(44, 0)
+                m.putb(45, 0)
+            # dumb terminal has no mouse/menus (dinput.c dumb_init_input);
+            # undo slots default to 25 so the UNDO bit stays set
+            m.putw(16, self.flags2 & ~(0x20 | 0x100) if self.version >= 5
+                   else self.flags2)
+        # Z-machine Standard 1.1 self-description (init_header:
+        # standard_high = standard_low = 1); written for every version.
+        m.putb(50, 1)
+        m.putb(51, 1)
         self.fwords = m.getw(24)
         self.pc = m.getw(6)
         self.sp = self.mem.stack_top
@@ -204,10 +255,7 @@ class VM:
     # ------------------------------------------------- variable access
     def _put(self, a, v):
         v = self.trunc(v)
-        if self.width == 8:
-            self.mem.putu64(a, v)
-        else:
-            self.mem.putw(a, v)
+        self.mem.putw(a, v)
 
     def _readvar(self, x):
         # Locals live OUTSIDE story memory (frotz: the frame region sits in
@@ -234,8 +282,7 @@ class VM:
         """In-place read: 0 peeks the stack top without popping (ZSpec §4.4)."""
         if x == 0:
             a = self.sp + self.width
-            return s64(self.mem.getu64(a)) if self.width == 8 \
-                else s16(self.mem.getw(a))
+            return s16(self.mem.getw(a))
         return self._readvar(x)
 
     def _putvar(self, x, v):
@@ -265,7 +312,7 @@ class VM:
         # stack grows down: sp points at the next free slot, top value at sp+width
         # (reading at sp returned the slot BELOW the top — stale garbage values)
         a = self.sp + self.width
-        v = s64(self.mem.getu64(a)) if self.width == 8 else s16(self.mem.getw(a))
+        v = s16(self.mem.getw(a))
         self.sp += self.width
         return v
 
@@ -354,6 +401,13 @@ class VM:
                 self.pc_save = self.pc
                 inst, operands, nops = self._decode()
                 if inst in (228, 246) and self.input.empty:
+                    if inst == 228 and self.version < 4:
+                        # frotz z_read_line (input.c): "Draw status line
+                        # for V1 to V3 games" — redraw the status row
+                        # before every LINE read (z_read_char does NOT,
+                        # so a single-key confirm prompt does not
+                        # re-emit the status row).
+                        self._emit_v3_status()
                     self._before_read()
                     self.pending = (inst, operands, nops, self.pc_save)
                     self.needs_input = True
@@ -363,6 +417,15 @@ class VM:
                 self.raise_err(ops.ERR_ILLEGAL_OPCODE)
                 continue
             handler(operands, nops)
+            if self._more_pending:
+                # 23rd line flushed: dfrotz prints ***MORE*** (no
+                # trailing newline) and reads a line it discards.
+                self._more_pending = False
+                self._at_more = True
+                self._flush_at_seam()
+                self.events.append(Text("***MORE***"))
+                self.needs_input = True
+                return
         if self.done:
             self._flush_at_seam(final=True)
 
@@ -518,13 +581,16 @@ class VM:
         self.xstore(o[0], o[1])
 
     def op_loadw(self, o, n):
-        self.op_store(self.mem.getw(o[0] + o[1] * 2))
+        # address wraps mod 2^16 (frotz LOW_WORD): operand values >= 0x8000
+        # are negative as s16; an unmasked sum would go negative and Memory's
+        # OOB guard would silently return 0.
+        self.op_store(self.mem.getw((o[0] + o[1] * 2) & 0xFFFF))
 
     def op_storew(self, o, n):
-        self.mem.putw(o[0] + o[1] * 2, o[2])
+        self.mem.putw((o[0] + o[1] * 2) & 0xFFFF, o[2])
 
     def op_loadb(self, o, n):
-        self.op_store(self.mem.getb(o[0] + o[1]))
+        self.op_store(self.mem.getb((o[0] + o[1]) & 0xFFFF))
 
     # ------------------------------------------------ object tree / properties
     def _obj_field(self, obj, off):
@@ -738,7 +804,7 @@ class VM:
                 self._emit(s)
 
     def op_storeb(self, o, n):
-        self.mem.putb(o[0] + o[1], o[2])
+        self.mem.putb((o[0] + o[1]) & 0xFFFF, o[2])
 
     def op_copy_table(self, o, n):
         # VAR:253 copy_table src dst size (dork): dst 0 = zero the source
@@ -893,13 +959,19 @@ class VM:
             self._stream3_buf.extend(s)
             return
         if self._win == 1:
-            # Status line: write into the 80-col buffer at the cursor.
+            # Status line: write into the 80-col buffer at the cursor,
+            # tracking cell changes vs the last on-screen content
+            # (frotz dumb_set_cell semantics — see _status_ref).
+            i = self._status_col
             for ch in s:
                 if ch == "\n":
                     continue
-                if self._status_col < 80:
-                    self._status[self._status_col] = ch
-                self._status_col += 1
+                if i < 80:
+                    if ch != self._status_ref[i]:
+                        self._status_changed = True
+                    self._status[i] = ch
+                i += 1
+            self._status_col = i
             self._status_dirty = True
             return
         # Main window: buffer lines; they flush at the next read (dfrotz -t
@@ -907,64 +979,108 @@ class VM:
         # stays as line content (later text extends the same line, e.g.
         # '>[I don't know ...]' or '> Deck Nine ...' when the status line
         # merges in at the next seam).
+        # frotz counts every screen row the cursor completes — explicit
+        # newlines AND soft wraps — and pauses the machine at the 23rd
+        # (***MORE***), even mid-print: the rest of the batch is held in
+        # _emit_rest and re-emitted after the prompt line is consumed.
         text, self._col = self._wrap(s, self._col)
-        for ch in text:
+        i, n = 0, len(text)
+        while i < n:
+            ch = text[i]
             if ch == "\n":
                 self._lines.append(self._line)
                 self._line = ""
+                i += 1
+                self._line_count += 1
+                self._row = min(self._row + 1, 23)  # scroll keeps the
+                # cursor on the bottom row (frotz os_scroll_area)
+                if self._line_count >= 23:
+                    self._more_pending = True
+                    self._emit_rest = text[i:]
+                    return
             else:
                 self._line += ch
+                i += 1
 
     def _status_line(self):
-        """The window-1 buffer rstripped if it changed since the last flush,
-        else None. The buffer is PERSISTENT (the game updates it in place),
-        so never clear it here; dfrotz -t omits unchanged re-prints."""
+        """The status buffer rstripped if any of its cells changed since
+        the last emission, else None (frotz dumb terminal: a cell is
+        'changed' only when the written value differs — an identical
+        re-draw re-emits nothing). The buffer is PERSISTENT (the game
+        updates it in place), so never clear it here."""
         if not self._status_dirty:
             return None
         self._status_dirty = False
-        if not any(c != " " for c in self._status):
-            return None  # game cleared the line: nothing to show
-        line = "".join(self._status).rstrip()
-        if line == self._last_status:
+        changed = self._status_changed
+        self._status_changed = False
+        self._status_ref = list(self._status)  # row content is now this
+        if not changed:
             return None
-        self._last_status = line
-        return line
+        if not any(c != " " for c in self._status):
+            return None  # the row was cleared: nothing to show
+        return "".join(self._status).rstrip()
 
     def _flush_at_seam(self, final=False):
-        """dfrotz -t flush at a read (or machine end): the status line (if
-        changed) first, then the main-window lines buffered since the last
-        flush, blank runs collapsed to one line. A bare `>` last line is
-        emitted without a newline (final=True forces the newline)."""
+        """dfrotz -t flush at a read (or machine end), mirroring the dumb
+        terminal's SPANS emission (verified against instrumented frotz 2.55):
+
+        - the status row (if the game wrote it since the last flush) goes
+          first, followed by one blank line only when the first content
+          row is NOT adjacent to it (a content row is adjacent when its
+          batch started at the main-window top; v3 status blocks sit far
+          above the main window, so v3 content is never adjacent);
+        - leading blank rows are never emitted (SPANS starts at the first
+          changed row; the screen's top rows were blank at start);
+        - a blank row is emitted (as a bare newline) only if a non-blank row
+          follows it (SPANS: row r is shown when row r+1 changed);
+        - the cursor row — the in-progress line at the seam — is emitted
+          BARE (no trailing newline) by the prompt path, so in the byte
+          stream it merges with the next seam's first emission
+          ('> <status>'); a completed last row (the batch ended with a
+          newline) gets a newline;
+        - final=True (machine end) forces the trailing newline.
+        """
         status = self._status_line()
         lines = list(self._lines)
+        cursor_row = bool(self._line)
         if self._line:
             lines.append(self._line)
         self._lines, self._line, self._col = [], "", 0
+        # SPANS starts at the first changed row: leading blank rows never
+        # reach stdout.
+        i = 0
+        while i < len(lines) and not lines[i].rstrip():
+            i += 1
+        raw = lines[i:]
+        lines = [l.rstrip() for l in raw]
         if status is not None:
-            lines = [status] + lines
-        out = []
-        for l in lines:
-            l = l.rstrip()
-            if not l and out and not out[-1]:
-                continue
-            out.append(l)
-        body, last = out[:-1], (out[-1] if out else None)
-        for l in body:
-            self.events.append(Text(l + "\n"))
-        if last is not None:
-            if last == ">" and not final:
-                self.events.append(Text(">"))  # merges with the next flush
+            # One blank line between the status row and the content only
+            # when the first content row is not adjacent to the status
+            # row (see _batch_row); adjacent content follows the status
+            # row directly in the byte stream.
+            blank = bool(lines) and (self.version < 4 or self._batch_row != 0)
+            self.events.append(Text(status + "\n" + ("\n" if blank else "")))
+        for k, l in enumerate(lines):
+            last = k == len(lines) - 1
+            if not l:
+                if last or not lines[k + 1]:
+                    continue
+                self.events.append(Text("\n"))
+            elif last and cursor_row and not final:
+                # Bare prompt row: the exact cells before the cursor —
+                # frotz prints them verbatim, trailing spaces included.
+                self.events.append(Text(raw[k]))
             else:
-                self.events.append(Text(last + "\n"))
+                self.events.append(Text(l + "\n"))
+        # The next line buffer starts at the current cursor row.
+        self._batch_row = self._row
 
     def _before_read(self):
         """Runs when the machine blocks on input (ZSpec §7.1.1.1, §8.2.4).
-        v3: the interpreter also draws the status line before every read."""
-        if self.version < 4:
-            # v3 auto-redraw before every read (ZSpec §8.2.4): recompute the
-            # interpreter status into the row-0 buffer; the flush below emits
-            # it (first, like the v5 window-1 line) iff it changed.
-            self._emit_v3_status()
+        frotz 2.55 does NOT auto-redraw the v3 status line before a read:
+        it is drawn only when the game executes @show_status (v3 table
+        entry 49), so the status row is re-emitted at a seam only if the
+        game actually redrew it since the last flush."""
         self._flush_at_seam()
 
     def _emit_v3_status(self):
@@ -996,13 +1112,28 @@ class VM:
             line = line.ljust(66)
             line += "Moves: " + str(moves)
         for i in range(80):
-            self._status[i] = line[i] if i < len(line) else " "
+            ch = line[i] if i < len(line) else " "
+            if ch != self._status_ref[i]:
+                self._status_changed = True
+            self._status[i] = ch
         self._status_dirty = True
 
     # ------------------------------------------------- input / read family
     def feed(self, line):
         """Feed one input line (encoded ZSCII + 13). dfrotz -t does not
         echo piped input, so no echo events are modelled."""
+        if self._at_more:
+            # frotz dumb_read_misc_line: the line typed at ***MORE*** is
+            # read and discarded; the machine then resumes (the game's
+            # own @read consumes the NEXT line) — and the held tail of
+            # the interrupted print goes out first.
+            self._at_more = False
+            self._line_count = 0
+            if self._emit_rest:
+                rest = self._emit_rest
+                self._emit_rest = ""
+                self._emit(rest)
+            return
         self.input.feed(line)
 
     def _consume_line(self):
@@ -1029,6 +1160,7 @@ class VM:
         t1 = o[0] & 0xFFFF
         t2 = o[1] & 0xFFFF
         codes = self._consume_line()
+        self._line_count = 0  # frotz console_read_input: zero all counters
         if self.version >= 5:
             # byte0 = max chars; byte1 = count written; chars at byte2..
             # Leftover rule: byte1 > 0 on entry = chars left from an
@@ -1058,7 +1190,9 @@ class VM:
         # VAR:246: one keypress -> its ZSCII code (13 = CR). o[0] must be
         # 1 (keyboard); v4+ o[1], o[2] = timer (unsupported; evaluated at
         # decode time like aread's).
-        self.op_store(self.input.get())
+        v = self.input.get()
+        self._line_count = 0  # frotz console_read_key: zero all counters
+        self.op_store(v)
 
     def _tokenise(self, t1, t2):
         """Lexical analysis of the text buffer -> parse table (ZSpec
@@ -1206,13 +1340,13 @@ class VM:
         self._emit(s)
 
     def op_print_paddr(self, o, n):
+        # frotz z_print_paddr: decode_text(HIGH_STRING, packed addr) — the
+        # byte address is packed * length_divisor in EVERY version (v8: *8);
+        # v8 strings are normal 5-bit z-chars, there is no wide form in
+        # frotz 2.55.
         p = o[0] & 0xFFFF
-        if self.version == 8 and p & 0x8000:  # v8 wide-string flag (task 9)
-            s, _ = decode_text(self.mem, self.fwords, (p & 0x7FFF) * 8,
-                               self.zscii_extra, self.alphabet, wide=True)
-        else:
-            s, _ = decode_text(self.mem, self.fwords, p * self.pack_mult,
-                               self.zscii_extra, self.alphabet)
+        s, _ = decode_text(self.mem, self.fwords, p * self.pack_mult,
+                           self.zscii_extra, self.alphabet)
         self._emit(s)
 
     def op_print_char(self, o, n):

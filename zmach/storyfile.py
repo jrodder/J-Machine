@@ -8,7 +8,8 @@ from .events import StoryFileError
 
 LENGTH_DIVISOR = {3: 2, 5: 4, 8: 8}
 SUPPORTED = (3, 5, 8)
-MEMORY_SIZE = 524288  # uniform 512 KB image (spec §7)
+# (No fixed image size: memory = story image + interpreter stack;
+# see StoryFile.memory_size. The classic 512 KB space is too small for v8.)
 
 
 @dataclass
@@ -93,4 +94,11 @@ class StoryFile:
         return StoryFile(path, data, h)
 
     def memory_size(self):
-        return MEMORY_SIZE
+        # frotz 2.55 allocation: the story image plus the interpreter's data
+        # stack above it (stack words: v1-v3 0x2000, v4-v7 0x4000, v8
+        # 0x20000). v8 totals can exceed the classic 512 KB address space
+        # (risorg: 0x6C368 + 0x40000 = 0xAC368); the stack must be real
+        # memory or push/pop silently no-op.
+        v = self.header.version
+        stack_words = 0x2000 if v <= 3 else 0x4000 if v <= 7 else 0x20000
+        return self.header.declared_len + 2 * stack_words

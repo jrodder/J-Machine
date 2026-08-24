@@ -72,5 +72,19 @@ class TestMiniZork(unittest.TestCase):
                          f"line count: {len(our_lines)} vs {len(ref_lines)}")
 
 
+class TestZorkIByteExact(unittest.TestCase):
+    """Byte-exact dfrotz -t short session (regression guard for the
+    flush model: the norm()-based test above cannot see blank-line or
+    prompt-merge differences)."""
+
+    LINES = ["look", "look", "quit", "yes"]
+
+    def test_short_session_bytes(self):
+        ours = run_vm(C / "zork1.z3", self.LINES)
+        ref = dfrotz_transcript(C / "zork1.z3", self.LINES, seed=SEED)
+        ref = ref.split("\n", 2)[2]  # strip dfrotz's startup banner
+        self.assertEqual(ours, ref)
+
+
 if __name__ == "__main__":
     unittest.main()
