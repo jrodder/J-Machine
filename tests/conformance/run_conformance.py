@@ -23,9 +23,20 @@ from zmach.events import EndOfGame, Text
 from zmach.session import Session
 
 
-def play_session_lines(path, lines, seed=None):
-    """Feed `lines` one per batch; return the joined Text data."""
+def play_session_lines(path, lines, seed=None, handlers=None):
+    """Feed `lines` one per batch; return the joined Text data.
+
+    handlers = optional callable `handlers(session) -> (save_cb,
+    restore_cb)` installed before load — the host layer for in-game
+    @save/@restore (spec §5; dfrotz has a default file-save handler, so a
+    bare VM cannot reach Done. for suites that exercise in-game saving,
+    e.g. crashme). It receives the LIVE session so the cbs can save/restore
+    into it."""
     s = Session()
+    if handlers is not None:
+        save_cb, restore_cb = handlers(s)
+        s.set_save_handler(save_cb)
+        s.set_restore_handler(restore_cb)
     out = [e.data for e in s.load(str(path), seed=seed)
            if isinstance(e, Text)]
     for line in lines:
@@ -38,10 +49,10 @@ def play_session_lines(path, lines, seed=None):
     return "".join(out)
 
 
-def play_to_end(path, seed=None, max_lines=500):
+def play_to_end(path, seed=None, max_lines=500, handlers=None):
     """Feed blank lines until EndOfGame or max_lines."""
     return play_session_lines(Path(path), ["" for _ in range(max_lines)],
-                              seed=seed)
+                              seed=seed, handlers=handlers)
 
 
 if __name__ == "__main__":
