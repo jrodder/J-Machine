@@ -8,6 +8,7 @@ INV1: output only via self.events. INV2: run_until_input returns only on
 needs_input / done / unrecoverable error.
 """
 import os
+import tempfile
 from dataclasses import dataclass
 
 from . import opcodes as ops
@@ -51,7 +52,7 @@ def s64(x):
 @dataclass
 class Frame:
     return_pc: int    # byte address after the call instruction (where the store byte sits)
-    locals_base: int  # byte address of local 1
+    locals: list      # local values (NOT story memory — see _readvar note)
     n_locals: int
     n_args: int       # args actually passed, uncapped (for check_arg_count)
     sp: int           # operand-stack pointer on entry
@@ -101,11 +102,13 @@ class VM:
         self.sp = 0
         self.frames = []
         self.catch_stack = []
-        self.frame_alloc = 0
         self.fwords = 0
-        # Task 10 hooks: (filename_hint: str) -> bool
-        self.save_handler = None
-        self.restore_handler = None
+        # Task 10 hooks: (filename_hint: str) -> bool. Defaults are whole-
+        # memory stubs so in-game SAVE/RESTORE round-trip successfully until
+        # task 10 installs the real (version-correct) formats.
+        self._stub_save_path = None
+        self.save_handler = self._stub_save
+        self.restore_handler = self._stub_restore
         self._init()
         # dictionary vocabulary (static in the story file; fwords must be set
         # first, hence after _init) — abbreviations inside entries need it
@@ -145,9 +148,11 @@ class VM:
         Used for both first start and @restart (memory is reset first)."""
         m, h = self.mem, self.story.header
         if self.version == 3:
-            # Keep size/colour/high-mem bits; claim split-window support
-            # (bit 5) so v3 games skip the unhandled fallback path.
-            m.putb(1, (m.getb(1) & 3) | 0x20)
+            # v3 header byte 1 = story config bits (dfrotz: CONFIG_TANDY 0x08
+            # etc.). Our oracle runs `dfrotz -t`, whose OS layer does
+            # `config |= CONFIG_TANDY` for V3 only (frotz_dinit.c
+            # os_init_screen) — mirror that; keep all other file bits as-is.
+            m.putb(1, m.getb(1) | 0x08)
         else:
             m.putb(1, 0x1D if self.version >= 5 else 0x1C)
             m.putb(30, 1)   # interpreter number (dfrotz parity: banner prints "Interpreter 1")
@@ -165,7 +170,6 @@ class VM:
         self.fwords = m.getw(24)
         self.pc = m.getw(6)
         self.sp = self.mem.stack_top
-        self.frame_alloc = self.globals_base + 480 * (self.width // 2)
         self.frames = []
         self.catch_stack = []
         self.seed = self.seed0
@@ -206,9 +210,18 @@ class VM:
             self.mem.putw(a, v)
 
     def _readvar(self, x):
+        # Locals live OUTSIDE story memory (frotz: the frame region sits in
+        # the interpreter's own stack array). v3 games raw-pointer their
+        # GLOBALS tables (e.g. Zork I keeps parse tables in g168+); frame
+        # locals placed in the globals region collided with and corrupted
+        # those tables. Top-level locals (no frame) = data-stack words,
+        # exactly like frotz (fp at stack top: local i = fp - i).
         if x < 16:
-            f = self.frames[-1]
-            return self.trunc(self.mem.getw(f.locals_base + (x - 1) * self.width))
+            f = self.frames[-1] if self.frames else None
+            if f is not None:
+                return self.trunc(f.locals[x - 1]) if x - 1 < len(f.locals) else 0
+            a = self.mem.stack_top - (x - 1) * self.width
+            return self.trunc(self.mem.getw(a))
         return self.trunc(self.mem.getw(self.globals_base + (x - 16) * self.width))
 
     def fetch(self, x):
@@ -227,9 +240,13 @@ class VM:
 
     def _putvar(self, x, v):
         if x < 16:
-            f = self.frames[-1]
-            if x - 1 < f.n_locals:
-                self._put(f.locals_base + (x - 1) * self.width, v)
+            f = self.frames[-1] if self.frames else None
+            if f is not None:
+                if x - 1 < len(f.locals):
+                    f.locals[x - 1] = self.trunc(v)
+            else:
+                a = self.mem.stack_top - (x - 1) * self.width
+                self._put(a, v)
         else:
             self._put(self.globals_base + (x - 16) * self.width, v)
 
@@ -277,9 +294,8 @@ class VM:
             return inst & 0x1F, [o0, o1], 2
         if inst < 0xC0:
             # short form (ZSpec §4.3.1)
-            if inst == 0xBE:  # 190: extended prefix (v5+), illegal before
-                if self.version < 5:
-                    return -1, [], 0
+            if inst == 0xBE:  # 190: extended prefix (all versions; frotz
+                # handles it in one opcode table for V1-V8)
                 opnum = m.getb(self.pc)
                 self.pc += 1
                 t = m.getb(self.pc)
@@ -383,7 +399,6 @@ class VM:
             return
         f = self._pop_frame()
         self.sp = f.sp
-        self.frame_alloc = f.locals_base
         self.pc = f.return_pc
         if not f.discard:
             self.op_store(value)
@@ -401,7 +416,6 @@ class VM:
             self._pop_frame()
         f = self.frames[-1]
         self.sp = f.sp
-        self.frame_alloc = f.locals_base
         self.pc = f.return_pc
         self.op_store(n)
 
@@ -483,6 +497,11 @@ class VM:
 
     def op_pull(self, o, n):
         self.xstore(o[0], self._pop())
+
+    def op_pop(self, o, n):
+        # v1-v4 0OP:185 pop: discard the stack top, no operand (frotz
+        # op0_opcodes[0x09] = z_pop for h_version <= V4; 0xB9 = catch v5+).
+        self._pop()
 
     def op_inc(self, o, n):
         # operand 0 = top of stack, in place (ZSpec §4.2.2); xstore covers
@@ -656,6 +675,16 @@ class VM:
         f = self._propfind(o[0] & 0xFFFF, o[1] & 0xFFFF)
         self.op_store(f[0] if f else 0)
 
+    def op_put_prop(self, o, n):
+        # VAR:227 put_prop object property value (dork PUTP): 2-byte slot ->
+        # word write, else byte write; propfind miss -> byte to addr 0 (dork).
+        obj, prop, val = o[0] & 0xFFFF, o[1] & 0xFFFF, o[2]
+        f = self._propfind(obj, prop)
+        if f and f[1] == 2:
+            self.mem.putw(f[0], val)
+        else:
+            self.mem.putb(f[0] if f else 0, val)
+
     def op_get_next_prop(self, o, n):
         obj = o[0] & 0xFFFF
         if obj == 0:
@@ -711,6 +740,22 @@ class VM:
     def op_storeb(self, o, n):
         self.mem.putb(o[0] + o[1], o[2])
 
+    def op_copy_table(self, o, n):
+        # VAR:253 copy_table src dst size (dork): dst 0 = zero the source
+        # region; size<0 = forced forward byte copy; size>=0 = memmove.
+        src, dst = o[0] & 0xFFFF, o[1] & 0xFFFF
+        size, nm = s16(o[2]), abs(s16(o[2]))
+        if dst == 0:
+            for i in range(nm):
+                self.mem.putb(src + i, 0)
+        elif size < 0:
+            for i in range(nm):
+                self.mem.putb((dst + i) & 0xFFFF, self.mem.getb((src + i) & 0xFFFF))
+        else:
+            buf = [self.mem.getb((src + i) & 0xFFFF) for i in range(nm)]
+            for i, b in enumerate(buf):
+                self.mem.putb((dst + i) & 0xFFFF, b)
+
     # ------------------------------------------------- calls / return
     def _do_call(self, o, n, store_result):
         if n == 0 or o[0] == 0:
@@ -722,19 +767,16 @@ class VM:
             return
         fn = (o[0] & 0xFFFF) * self.pack_mult
         nlocals = self.mem.getb(fn)
-        base = self.frame_alloc
-        for i in range(nlocals):
-            self._put(base + i * self.width, 0)
-        if self.version == 3:
-            # v3/v4 routines keep default local values in the header
-            for i in range(nlocals):
-                self._put(base + i * self.width, self.mem.getw(fn + 1 + i * 2))
-        self.frame_alloc += nlocals * self.width
-        for k in range(min(n - 1, nlocals)):
-            self._put(base + k * self.width, o[1 + k])
-        self.frames.append(Frame(self.pc, base, nlocals, n - 1,
+        nargs = min(n - 1, nlocals)
+        # v1-v4 routines keep default local values in the header (frotz:
+        # h_version <= V4 consumes nlocals 2-byte defaults from the stream);
+        # v5+ defaults are 0. Args fill locals 1..nargs, rest get defaults.
+        defaults = ([self.mem.getw(fn + 1 + i * 2) for i in range(nlocals)]
+                    if self.version <= 4 else [0] * nlocals)
+        locals_ = [o[1 + i] if i < nargs else defaults[i] for i in range(nlocals)]
+        self.frames.append(Frame(self.pc, locals_, nlocals, n - 1,
                                  self.sp, not store_result))
-        self.pc = fn + 1 + (nlocals * 2 if self.version == 3 else 0)
+        self.pc = fn + 1 + (nlocals * 2 if self.version <= 4 else 0)
 
     def op_call_1s(self, o, n):
         self._do_call(o, n, True)
@@ -790,7 +832,8 @@ class VM:
         self._emit("".join(parts))
 
     def op_check_arg_count(self, o, n):
-        self._predicate(o[0] <= self.frames[-1].n_args)
+        nargs = self.frames[-1].n_args if self.frames else 0
+        self._predicate(o[0] <= nargs)
 
     # ------------------------------------------------- catch / throw / err
     def op_catch(self, o, n):
@@ -807,7 +850,6 @@ class VM:
             self._pop_frame()
         f = self.frames[-1]
         self.sp = f.sp
-        self.frame_alloc = f.locals_base
         self.pc = f.return_pc
         self.op_store(value)
 
@@ -914,18 +956,25 @@ class VM:
                 self.events.append(Text(">"))  # merges with the next flush
             else:
                 self.events.append(Text(last + "\n"))
-        if self.version < 4:
-            self._emit_v3_status()
 
     def _before_read(self):
         """Runs when the machine blocks on input (ZSpec §7.1.1.1, §8.2.4).
         v3: the interpreter also draws the status line before every read."""
+        if self.version < 4:
+            # v3 auto-redraw before every read (ZSpec §8.2.4): recompute the
+            # interpreter status into the row-0 buffer; the flush below emits
+            # it (first, like the v5 window-1 line) iff it changed.
+            self._emit_v3_status()
         self._flush_at_seam()
 
     def _emit_v3_status(self):
-        # ZSpec §8.2, format pinned against dfrotz's Zork I line 3
-        # (verified-facts): 56-col name field, then Score/Moves, clip 80.
-        # Globals: 16 = location object, 17 = moves, 18 = score.
+        if self.mem.getb(1) & 0x10:
+            return  # CONFIG_NOSTATUSLINE: the interpreter draws no status line
+        # v3 status line (frotz z_show_status, mirrored column-exactly):
+        # ' ' + g16 short name, padded so 'Score: ' starts at col 50 and
+        # 'Moves: ' at col 66 (0-based); time games: 'Time: ' at col 60,
+        # hours = (g17+11)%12+1, minutes zero-padded, am/pm from g17>=12.
+        # g16/g17/g18 = frotz's global0/global1/global2 (h_globals + 0/2/4).
         obj = self._readvar(16)
         name = ""
         if obj:
@@ -933,13 +982,22 @@ class VM:
             if pa:
                 name, _ = decode_text(self.mem, self.fwords, pa + 1,
                                       self.zscii_extra, self.alphabet)
-        left = (" " + name).ljust(56)
-        if self.mem.getb(1) & 2:  # v3 flags1 bit 1: time game
-            right = f"Time: {self._readvar(17):02d}:{self._readvar(18):02d}"
+        score, moves = self._readvar(17), self._readvar(18)
+        line = " " + name
+        if self.mem.getb(1) & 2:  # CONFIG_TIME
+            hours = (score + 11) % 12 + 1
+            line = line.ljust(60)
+            line += "Time: " + (f" {hours}" if hours < 10 else str(hours)) + ":"
+            line += ("0" if moves < 10 else "") + str(moves)
+            line += " " + ("p" if score >= 12 else "a") + "m"
         else:
-            right = (f"Score: {self._readvar(18)}" + " " * 8
-                     + f"Moves: {self._readvar(17)}")
-        self.events.append(Text((left + right)[:80] + "\n"))
+            line = line.ljust(50)
+            line += "Score: " + str(score)
+            line = line.ljust(66)
+            line += "Moves: " + str(moves)
+        for i in range(80):
+            self._status[i] = line[i] if i < len(line) else " "
+        self._status_dirty = True
 
     # ------------------------------------------------- input / read family
     def feed(self, line):
@@ -984,16 +1042,16 @@ class VM:
             self._tokenise(t1, t2)
             self.op_store(13)
         else:
-            # v1-4: byte0 = max-1 preset; chars at byte1.., 0-terminated
+            # v1-4: byte0 = max-1 preset; chars at byte1.., 0-terminated.
+            # Prior contents are STALE — replace them (dork handleInput:
+            # slice(0, bytes[t1]-1), write at t1+1.., 0-terminate). The
+            # v5 leftover rule above does not apply: it models interrupted
+            # (timed-out) reads, and a v3 sread always starts fresh.
             maxn = self.mem.getb(t1)
-            end = 1
-            while end <= maxn and self.mem.getb(t1 + end) != 0:
-                end += 1
-            left = end - 1
-            new = codes[:maxn - left]
+            new = codes[:maxn - 1]
             for j, c in enumerate(new):
-                self.mem.putb(t1 + 1 + left + j, c)
-            self.mem.putb(t1 + 1 + left + len(new), 0)
+                self.mem.putb(t1 + 1 + j, c)
+            self.mem.putb(t1 + 1 + len(new), 0)
             self._tokenise(t1, t2)
 
     def op_read_char(self, o, n):
@@ -1074,12 +1132,11 @@ class VM:
 
     def op_show_status(self, o, n):
         # 0OP:188 show_status: v3 only; v5+ treats it as nop (Wishbringer
-        # v5 rel 23 contains it by accident — ZSpec note).
-        # P2 (task 6 review): the v3 line is emitted immediately here and
-        # again by _flush_at_seam's pre-read auto-redraw, so a v3 turn can
-        # show the status twice / out of order vs the buffered main lines.
-        # v3 output ordering is adjudicated against the Zork I oracle in
-        # task 8; leave the v5 path (the only gated one) alone.
+        # v5 rel 23 contains it by accident — ZSpec note). v3: forces the
+        # interpreter to update the row-0 status buffer (ZSpec §8.2.4);
+        # the text model emits it at the next seam flush (task 8: P2-3
+        # resolved against the Zork I oracle — status line orders first at
+        # the seam, deduped by content, exactly like the v5 window-1 line).
         if self.version < 4:
             self._emit_v3_status()
 
@@ -1169,7 +1226,9 @@ class VM:
         self._emit("\n")
 
     def op_quit(self, o, n):
-        status = self._readvar(1) if self.version == 3 else 0
+        # v1-v3: exit status = global 1 (score) per ZMS/Inform convention;
+        # ZSpec 1.0 leaves it unspecified. v4+: 0.
+        status = self._readvar(16) if self.version <= 3 else 0
         self.events.append(EndOfGame(status))
         self.done = True
         self.done_status = status
@@ -1211,6 +1270,25 @@ class VM:
     def op_restore_v5(self, o, n):
         ok = self.restore_handler(self._decode_hint(o)) if self.restore_handler else False
         self.op_store(1 if ok else 0)
+
+    def _stub_save(self, hint):
+        # ponytail: stub until task 10 — whole dynamic memory to a temp
+        # file; frame locals (interpreter-side) are not restored.
+        fd, self._stub_save_path = tempfile.mkstemp()
+        with os.fdopen(fd, "wb") as f:
+            f.write(bytes(self.mem.mem))
+        return True
+
+    def _stub_restore(self, hint):
+        try:
+            with open(self._stub_save_path, "rb") as f:
+                data = f.read()
+        except (OSError, TypeError):
+            return False
+        if len(data) < len(self.mem.mem):
+            return False
+        self.mem.mem[:len(data)] = data
+        return True
 
     def _decode_hint(self, o):
         if not o:
@@ -1312,7 +1390,7 @@ class VM:
             189: self.op_verify, 191: self.op_piracy,
             # VAR
             224: self.op_call_vs, 225: self.op_storew, 226: self.op_storeb,
-            228: self.op_read, 229: self.op_print_char, 230: self.op_print_num,
+            227: self.op_put_prop, 228: self.op_read, 229: self.op_print_char, 230: self.op_print_num,
             231: self.op_random, 232: self.op_push, 233: self.op_pull,
             234: self._noop, 235: self.op_set_window, 236: self.op_call_vs2,
             237: self._noop, 238: self._noop, 239: self.op_set_cursor,
@@ -1322,6 +1400,7 @@ class VM:
             246: self.op_read_char, 247: self.op_scan_table,
             249: self.op_call_vn, 250: self.op_call_vn2,
             251: self.op_tokenise, 252: self.op_encode_text,
+            253: self.op_copy_table,
             255: self.op_check_arg_count,
             # EXT
             ops.EXT_BASE + 0: self.op_save_v5,
@@ -1335,8 +1414,9 @@ class VM:
             H[143] = self.op_not
             H[181] = self.op_save_v3
             H[182] = self.op_restore_v3
-            H[185] = self.op_pull  # pop: pull top, discard
+            H[185] = self.op_pop  # v1-v4: pop (0xB9); catch is v5+ only
             H[188] = self.op_show_status  # v3 interpreter-drawn status line
+            H[ops.EXT_BASE + 15] = self._noop  # split_window: text model
         else:
             H[143] = self.op_call_1n
             H[185] = self.op_catch
