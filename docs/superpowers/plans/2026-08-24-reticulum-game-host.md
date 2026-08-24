@@ -1430,7 +1430,7 @@ git commit -m "feat: jclient — scan/browse/play (spec §7 test client, Sideban
 - **Ports:** each test gets its own port (4341–4345) so host/client data dirs never collide and rebinds are clean. `play_once`/`play_proc`/`jclient` take `--port`.
 - **The host's `--seed 10`** matches the dfrotz `-s 10` oracle (Phase 1 differential harness convention).
 - **Cumulative replies:** the host replies with the session's full transcript each time; the `jclient play` prints only the *increment* (Task 4), so `norm(client stdout)` over a session == the session transcript == `norm(dfrotz -t -s 10)` for the same lines (Phase 1 differential gate proves the engine side).
-- **Reconnect (test 3, flagship):** the host process is **also restarted** between the two client phases (same host data dir) — that is the real reconnect: new host, persisted identities → same addresses, session restored from the autosave slot on disk. The new client's first reply is the restored batch (the turn-5 boundary prompt), which overlaps the tail of phase 1's output; `dedup_join` removes that one overlap before comparing (a phone shows the restored prompt twice — history + new message; the game STATE is what must be byte-identical). Phase 1 done-bar gate 3 (save round-trip) already proves the seam is byte-exact, so the overlap is exactly that boundary prompt.
+- **Reconnect (test 3, flagship):** the host process is **also restarted** between the two client phases (same host data dir) — that is the real reconnect: new host, persisted identities → same addresses, session restored from the autosave slot on disk. Verified engine behavior (2026-08-24 probe): a boundary autosave's restored batch is text-EMPTY (the VM is parked at the read; the batch is just the `Prompt` event) — so the phase-2 client's first reply starts with the new turn's text, there is NO overlap with phase 1's output, and `dedup_join` is a no-op safety net (it would dedupe only if a restore batch ever carried the boundary prompt). The assertion is therefore: `norm(out1 + out2) == norm(dfrotz with all 10 uninterrupted)` — the game STATE is byte-identical.
 - **Announce timing:** the host announces immediately at startup, then every 300 s; RNS re-announces to newly-connected peers on link establishment. If a test fails with a recall timeout and both logs show no announce reaching the client, verify the link-join re-announce path in the venv source (`site-packages/RNS/Destination.py`, `Link.py`); the deployment-tuning fallback is a fast initial announce burst in `Host.run()` (15 s for the first 2 minutes) — a knob, not a protocol change. Surface it, don't silently change the 300 s interval.
 
 - [ ] **Step 1: Write `tests/network/test_network.py`**
@@ -1633,13 +1633,17 @@ class Network(unittest.TestCase):
         the host-local slot file (keyed by the player's identity hash) is
         written by the in-game save and rewritten by the autosave after
         the restore turn. Two client phases (same identity): phase 1
-        '' (risorg startup line) + save + look; phase 2 restore + look."""
+        '' (transcript-only) + 'more' (absorbs seed-10's ***MORE*** intro
+        pause — the protocol never feeds empty lines) + save + look; phase
+        2 restore + look. Phase 2's client is fresh, so its reply is the
+        FULL cumulative transcript -> out2 contains BOTH "Ok."s."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             with host(["risorg.z8"], 4345, d) as dests:
                 addr = dests["games"]["risorg"]
                 work = d / "c5"
-                rc1, out1, _ = netrig.play_once(addr, ["", "save", "look"],
+                rc1, out1, _ = netrig.play_once(addr,
+                                                ["", "more", "save", "look"],
                                                 work, "p5a", timeout=300,
                                                 port=4345)
                 self.assertEqual(rc1, 0,
@@ -1655,7 +1659,8 @@ class Network(unittest.TestCase):
                                                 port=4345)
                 self.assertEqual(rc2, 0,
                                  out2 + "\n" + netrig.logs_tail(work))
-                self.assertEqual(out2.count("Ok."), 1)  # the restore verb
+                # cumulative reply: phase 1's save "Ok." + phase 2's restore "Ok."
+                self.assertEqual(out2.count("Ok."), 2)
                 st2 = slot.stat()
                 self.assertGreater(st2.st_mtime_ns, st1.st_mtime_ns,
                                    "slot file must be rewritten by the "
@@ -1672,6 +1677,10 @@ class Network(unittest.TestCase):
                         s.restore_image(store["img"])
                         return True
                     return save, restore
+                # reference: play_session_lines FEEDS "" (absorbed at the
+                # ***MORE*** pause — same as the wire's "more" line), so the
+                # line sequences differ by one absorbed line and the
+                # transcripts are identical
                 ref = play_session_lines(C / "risorg.z8",
                                          ["", "save", "look", "restore",
                                           "look"],

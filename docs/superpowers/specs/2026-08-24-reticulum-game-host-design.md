@@ -287,10 +287,15 @@ Notes:
   Story file changed or image corrupt → `SaveFileError` at restore → logged, host
   falls back to fresh start, player keeps playing. Nothing is ever "stacked".
 - **Reconnect (the whole point):** first message from a saved identity → fresh
-  `Session` + `load` (intro discarded) + `restore` → reply = the restored batch's
-  text (prompt + status line). From then on the player just types. Byte-identical
-  to the uninterrupted run — Phase 1 gate 3 (save round-trip) already proves the
-  engine side.
+  `Session` + `load` (intro discarded) + `restore` → state byte-identical to the
+  uninterrupted run (Phase 1 gate 3 proves the engine side). The restored
+  batch's text is **empty for a boundary save** (verified 2026-08-24 against the
+  Phase 1 engine: the VM parks at the read *after* the prompt cell was already
+  emitted in the pre-park batch, so `restore`'s batch is `[Prompt]`, `""` text —
+  byte-exact engine behavior; the prompt the player saw is already in their
+  phone's message history). The reply to a first empty message after a host
+  restart is therefore zero bytes (a client no-op); a first message with a line
+  gets that line's turn. From then on the player just types.
 - **In-game `@save`/`@restore` opcodes:** mapped to the host-local slot with no
   prompt — the opcode's hint string is ignored; the handler reads/writes
   `data/saves/<game>/<player>.zmsv` directly (the save slot *is* the identity,
