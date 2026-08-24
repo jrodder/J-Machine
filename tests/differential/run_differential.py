@@ -103,7 +103,7 @@ def report(n=None):
             ours_k = a[k] if k < len(a) else "<eof>"
             ref_k = b[k] if k < len(b) else "<eof>"
             print(f"{k:4d}  {ours_k} | {ref_k}{'  <-- DIVERGES' if k == i else ''}")
-    return i
+    return i, max(len(a), len(b))
 
 
 if __name__ == "__main__":
