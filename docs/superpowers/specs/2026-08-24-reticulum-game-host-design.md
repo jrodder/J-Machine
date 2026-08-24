@@ -74,8 +74,13 @@ project material. Line numbers refer to those versions.
 - Known-destination table: `RNS.Identity.known_destinations` (persisted; entries
   `[time, packet_hash, public_key, app_data, ...]`, Identity.py:101-113);
   `recall_app_data(destination_hash)` (Identity.py:162). Basis of `jclient scan`.
-- **Config format** (verified from RNS's own `--exampleconfig` + `TCPInterface.py`
-  key parsing + `Reticulum.py:978` which accepts `enabled` or `interface_enabled`):
+- **Config format** (CORRECTED 2026-08-24 against installed rns 1.5.0 source:
+  `Reticulum.py:745` parses interfaces from a top-level `[interfaces]`
+  section with nested `[[name]]` subsections; the wheel's bundled example
+  config (`Reticulum.py:~2140-2170`) is the canonical shape. The earlier
+  1.3.x-style block below is REPLACED — it parsed into zero system
+  interfaces on 1.5.0; `TCPInterface.py` key parsing for
+  listen_ip/listen_port/target_host/target_port unchanged):
 
 ```ini
 [reticulum]
@@ -83,18 +88,38 @@ enable_transport = yes
 share_instance = yes
 instance_name = <unique-per-node-on-machine>
 
-[[LAN TCP Server]]
-type = TCPServerInterface
-enabled = yes
-listen_ip = 0.0.0.0
-listen_port = 4242
+[logging]
+loglevel = 5
 
-[[TCP Client]]
-type = TCPClientInterface
-enabled = yes
-target_host = <ip>
-target_port = 4242
+[interfaces]
+
+  [[LAN TCP Server]]
+  type = TCPServerInterface
+  enabled = yes
+  listen_ip = 0.0.0.0
+  listen_port = 4242
+
+  [[TCP Client]]
+  type = TCPClientInterface
+  enabled = yes
+  target_host = <ip>
+  target_port = 4242
 ```
+
+  `log_to_file`/`log_file`/`log_level` do not exist in 1.5.0 (the
+  `[logging]` section takes `loglevel`; file logging is a constructor/
+  global concern). Other 1.5.0 API deltas found at runtime (verified
+  against installed source, Task 2): `RNS.prettyhexrep` (not
+  `prettyhash`); LXMF exports `LXMessage` (not `LXMMessage`); a peer
+  joining after the announce retransmit window (~11 s:
+  PATHFINDER_R=1, LOCAL_REBROADCASTS_MAX=2) must use
+  `RNS.Transport.request_path(hash)` — RNS serves path requests with the
+  destination announce; a client must announce its delivery destination
+  for the host to route replies; `RNS.Link` establishes asynchronously
+  (wait for `Link.ACTIVE` before `request()`); delivery destinations must
+  be obtained from `register_delivery_identity()` (a second manual
+  `RNS.Destination` for the same identity+aspects raises "already
+  registered").
 
 ### lxmf 1.1.1 (builds on rns 1.5.x — no version conflict)
 
