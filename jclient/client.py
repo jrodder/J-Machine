@@ -102,3 +102,22 @@ class Client:
                     return r
             time.sleep(2)
         raise TimeoutError("no reply")
+
+
+def parse_page(text):
+    """Parse the render_page format (jhost/protocol.py): a
+    '> name (vN)' line followed by a 2-space-indented '<hex:addr>' line.
+    Returns [(name, version:int, addr:str)]. Pure; [] if unparseable."""
+    import re
+    out = []
+    cur = None
+    for line in text.splitlines():
+        m = re.match(r"^> (\S+) \(v(\d+)\)\s*$", line)
+        if m:
+            cur = (m.group(1), int(m.group(2)))
+            continue
+        m = re.match(r"^\s{2}(<[0-9a-fA-F:]+>)\s*$", line)
+        if m and cur is not None:
+            out.append((cur[0], cur[1], m.group(1)))
+            cur = None
+    return out
