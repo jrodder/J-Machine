@@ -239,6 +239,9 @@ class VM:
         return v
 
     def _pcfetch(self):
+        # variable operand (frotz load_operand): the byte is a variable
+        # INDEX (0 = stack top, popped; 1-15 locals; 16-255 globals) —
+        # NOT a raw memory address; the loaded value is what handlers see.
         x = self._pcgetb()
         return self.fetch(x)
 
@@ -347,11 +350,15 @@ class VM:
                 self.pc += 1
                 t = m.getb(self.pc)
                 self.pc += 1
-                ops_list = [self._opfetch((t >> s) & 3) for s in (6, 4, 2, 0)]
-                nops = 0
-                while nops < 4 and ops_list[nops] is not None:
-                    nops += 1
-                return ops.EXT_BASE + opnum, ops_list[:nops], nops
+                # frotz __extended__ + load_all_operands: break at the
+                # first omitted pair (nothing fetched after it)
+                ops_list = []
+                for s in (6, 4, 2, 0):
+                    tt = (t >> s) & 3
+                    if tt == 3:
+                        break
+                    ops_list.append(self._opfetch(tt))
+                return ops.EXT_BASE + opnum, ops_list, len(ops_list)
             t = (inst >> 4) & 3
             if t == 3:
                 # 0OP ($B0-$BF): opnum is the full byte, no operand bytes
@@ -362,20 +369,25 @@ class VM:
             if t == 1:
                 return key, [self._pcgetb()], 1
             return key, [self._pcfetch()], 1
-        # variable form (ZSpec §4.3.3): operand types in the next byte(s)
+        # variable form (ZSpec §4.3.3): operand types in the next byte(s);
+        # frotz load_all_operands BREAKS at the first omitted pair, so
+        # nothing is fetched after it (don't decode past the end).
         t = m.getb(self.pc)
         self.pc += 1
-        types = [(t >> s) & 3 for s in (6, 4, 2, 0)]
+        ops_list = []
+        specs = [t]
         if inst in (0xEC, 0xFA):  # call_vs2 / call_vn2: a second type byte
             t2 = m.getb(self.pc)
             self.pc += 1
-            types += [(t2 >> s) & 3 for s in (6, 4, 2, 0)]
-        ops_list = [self._opfetch(tt) for tt in types]
-        nops = 0
-        while nops < len(ops_list) and ops_list[nops] is not None:
-            nops += 1
+            specs.append(t2)
+        for spec in specs:
+            for s in (6, 4, 2, 0):
+                tt = (spec >> s) & 3
+                if tt == 3:
+                    break
+                ops_list.append(self._opfetch(tt))
         key = inst & 0x1F if inst < 0xE0 else inst
-        return key, ops_list[:nops], nops
+        return key, ops_list, len(ops_list)
 
     def run_until_input(self):
         """Run until needs_input, done, or an unrecoverable error (INV2).
@@ -414,6 +426,14 @@ class VM:
                     return
             handler = self._handlers.get(inst)
             if inst < 0 or handler is None:
+                if inst >= ops.EXT_BASE:
+                    # frotz __extended__ (process.c:641): opcodes outside
+                    # its 29-entry table (0x1D-0xFF) and table slots a text
+                    # interpreter doesn't implement (picture/mouse/undo/
+                    # menu/colour) consume their operands and do nothing
+                    # observable — NOT a runtime error. (Undo ext 0x09/0x0A
+                    # is Task 10 territory.)
+                    continue
                 self.raise_err(ops.ERR_ILLEGAL_OPCODE)
                 continue
             handler(operands, nops)

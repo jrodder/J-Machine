@@ -1273,75 +1273,67 @@ Run: `python3 -m unittest tests.test_vm_v3 -v`
 
 ---
 
-### Task 9: v8 — 64-bit arithmetic, wide strings, v8 opcodes
+### Task 9: v8 — conformance to the oracle's actual v8 (re-scoped 2026-08-23)
+
+**Re-scope ruling (supersedes the original 64-bit brief):** the conformance
+oracle is `dfrotz` 2.55, and frotz 2.55 contains **no ZNE support at all**
+(no zne.c, no array opcodes, no 64-bit arithmetic — the only `V8` branches
+in the source are: `process.c:417 pc = routine << 3`, `text.c:420` string
+address `<< 3`, `fastmem.c` story-size ×4 scaling, and the 1..8 version
+gate). Byte-exact conformance therefore means: **v8 = the v7 instruction
+set, 16-bit words everywhere, packed multiplier 8**. The original brief's
+deliverables (64-bit locals/stack, v8 array opcodes, v8 tokenize/
+encode_text dictionary-operand forms) are dropped — the oracle never
+executes them, and implementing them would diverge from it. (risorg.z8,
+the sole corpus v8 game, already exercises the whole v8 surface end-to-end
+and is byte-exact.)
 
 **Files:**
-- Modify: `zmach/vm.py`, `zmach/opcodes.py` (v8 branches)
+- Modify: `zmach/vm.py` (ext-opcode fallback only)
 - Test: `tests/test_vm_v8.py`
 
 **Interfaces:**
-- Consumes: Tasks 5-8
-- Produces (v8 only):
-  - 64-bit locals/globals/stack entries (`memory.width == 8`; arithmetic on Python ints masked to signed 64-bit: `((x & 0xFFFFFFFFFFFFFFFF) << 64) >> 64`; `print_num` 64-bit signed; `mul` truncates to 64 bits)
-  - packed multiplier 8; stack top 0x3FFFE
-  - `print`/`print_ret` wide strings (packed & 0x8000 → `decode_wide`)
-  - v8 array opcodes: `new_array`, `move_array`, `get_array_size`, `load_array`, `store_array` (extended opcodes — numbers from ZSpec §14 v8 entries; array header: first word = size in words; 64-bit elements)
-  - `random`, `tokenize` (v8 form incl. dictionary operand), `encode_text` (v8: 9 z-chars + optional dict) per ZSpec §15 + dork
-  - `check_arg_count` (VAR:255, v5+: also in v5 — implement here if not in Task 5)
-  - v8 `quit` status global (per ZSpec §15 — verify with dfrotz on a quit script; not asserted, no traceback required)
+- Consumes: Tasks 5-8 (decode, call scaling, strings, header, IO all in place)
+- Produces (v8 conformance, all oracle-pinned):
+  - v8 header parse + story size = file_size ×8; memory = story + 2×1024-word stack
+  - ×8 packed addresses: `@call_v` routine→byte (`routine << 3`) and wide strings
+  - 0x80–0xAF short-form 1OP range: type nibble is a WIDTH selector only
+    (0=large 2-byte, 1/2=1-byte unsigned); the value is interpreted by the
+    1OP as a variable index (frotz `load_operand` + `z_dec`/`z_jz` in
+    variable.c/math.c — verified: risorg status loop `96 ff` = dec G239)
+  - extended opcodes: frotz's table has 29 entries (0x00–0x1C);
+    0x1D–0xFF consume their operands and do nothing (`__extended__`
+    process.c:641). Our gap: any ext opcode without a handler raised
+    ERR_ILLEGAL_OPCODE. Fix: ext range + missing handler → no-op (operands
+    already consumed by `_decode`). Picture/mouse/menu/colour ext slots are
+    invisible in text mode; save_undo/restore_undo (0x09/0x0A) stay deferred
+    to Task 10 (undo machinery).
+  - `random`/`tokenize`/`encode_text`: version-independent in frotz 2.55
+    (v5 forms) — no v8 variants needed.
 
-- [ ] **Step 1: Write the failing differential test**
+- [x] **Step 1: Write the failing differential tests** (`tests/test_vm_v8.py`):
+  - `TestV8Header`: pinned risorg header facts (version 8, start_pc 0xFD21,
+    globals 0xA965, flags2 0x50, length_divisor 8, declared_len 0x6C368 =
+    file_size 0xD86D ×8, memory_size = declared + 0x40000)
+  - `TestV8Decode`: decode risorg's REAL bytes — inst 0 = call_v(0x1FA5);
+    status loop `e5 7f 20` = print_char(32), `96 ff` = dec var 255, `a0 ff
+    3f` = jz var 255 (short form, 0x80–0xAF range)
+  - `TestExtFallback`: crafted `BE <ext> C0` + jump + quit at a writable
+    address — unimplemented (0x05) and reserved (0x3F) ext opcodes must
+    no-op, not raise (FAILS before the fix: ERR_ILLEGAL_OPCODE)
+  - `TestRisorgV8Session`: byte-exact 6-command session, seed 21 (new
+    room/seed breadth beyond TestRisorgByteExact)
+- [x] **Step 2: Run, verify FAIL** (ext fallback tests fail; others pin existing behavior)
+- [x] **Step 3: Implement** — ext no-op fallback in `run_until_input` dispatch
+- [x] **Step 4: Run, verify PASS** (`python3 -m unittest tests.test_vm_v8 -v` + full suite)
+- [x] **Step 5: Commit**
 
-```python
-# tests/test_vm_v8.py
-import unittest
-from pathlib import Path
-from tests.util import dfrotz_transcript, norm
-from zmach.storyfile import StoryFile
-from zmach.vm import VM
-from zmach.events import Text
+`git add -A && git commit -m "feat: v8 conformance — re-scoped to oracle (no ZNE in frotz 2.55): header/×8/1OP-range/ext-fallback pinned, risorg byte-exact"`
 
-C = Path(__file__).parent / "corpus"
-SEED = 10
-LINES = ["look", "north", "examine everything", "take everything", "quit"]
-
-class TestRisorg(unittest.TestCase):
-    def test_risorg_first_commands(self):
-        sf = StoryFile.load(C / "risorg.z8")
-        vm = VM(sf, seed=SEED)
-        out = []
-        vm.run_until_input()
-        out += [e.data for e in vm.events if isinstance(e, Text)]
-        vm.events.clear()
-        for line in LINES:
-            vm.feed(line)
-            vm.run_until_input()
-            out += [e.data for e in vm.events if isinstance(e, Text)]
-            vm.events.clear()
-        ours = "".join(out)
-        ref = norm(dfrotz_transcript(C / "risorg.z8", LINES, seed=SEED))
-        our_lines = [l for l in (x.strip() for x in ours.split("\n")) if l]
-        ref_lines = [l for l in ref.split("\n") if l]
-        m = min(len(our_lines), len(ref_lines))
-        self.assertGreaterEqual(m, 15, f"too few lines ({m}) — v8 coverage bug")
-        for i in range(m):
-            self.assertEqual(our_lines[i], ref_lines[i],
-                             f"line {i}: {our_lines[i]!r} != {ref_lines[i]!r}")
-        # wide-string coverage: risorg's I7 library prints diacritics in some text
-        self.assertNotIn("\ufffd", ours)
-```
-
-- [ ] **Step 2: Run, verify FAIL**
-
-- [ ] **Step 3: Implement v8 mode** (64-bit pass over every arithmetic/array/variable site — a `width`-switched helper keeps it one place; extended-opcode table for v8 per ZSpec §14 + dork machine.ts)
-
-- [ ] **Step 4: Run, verify PASS**
-
-Run: `python3 -m unittest tests.test_vm_v8 -v`
-
-- [ ] **Step 5: Commit**
-
-`git add -A && git commit -m "feat: v8 64-bit mode, wide strings, v8 array opcodes; risorg matches dfrotz"`
+**Carried to Task 10/12 (documented, not implemented here):**
+- undo ext opcodes 0x09/0x0A (frotz fastmem.c undo slots) — Task 10 territory
+- `@restart` re-runs the header self-description writes (done via `mem.reset()` + `_init()`)
+- conformance-suite harness (Task 12) can extend the ext-table pin to the full 29-entry frotz table
 
 ---
 
