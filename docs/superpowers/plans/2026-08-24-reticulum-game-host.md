@@ -496,6 +496,15 @@ git commit -m "feat: jhost protocol core — pure message handling, save stores,
 
 ### Task 2: venv + rig smoke test (spec test 0) — the highest-risk unknown
 
+**STATUS: IMPLEMENTED (commit 0a9c48d) with 12 runtime deviations — see
+`.superpowers/sdd/2026-08-24-reticulum-game-host/task-2-report.md`.** The
+verbatim code below predates Task 2's findings; the committed
+`tests/network/smoke_host.py` + `jclient/client.py` are the verified
+versions (LXMessage, prettyhexrep, register_delivery_identity return
+value, router.announce, request_path late-joiner bootstrap, Link.ACTIVE
+wait). Tasks 3-5 dispatches must treat the committed files as the API
+reference, not this task's original snippets.
+
 **Files:**
 - Create: `.venv/` (not committed), `pyproject.toml` (dependency declaration, spec §3/§8), `tests/network/__init__.py` (empty), `tests/network/netrig.py`, `tests/network/smoke_host.py`, `tests/network/test_netrig.py`
 - Modify: `.gitignore` (add `.venv/`)
@@ -1020,7 +1029,7 @@ import time
 from pathlib import Path
 
 import RNS
-from LXMF import LXMMessage, LXMRouter
+from LXMF import LXMessage, LXMRouter
 
 from .protocol import (DEST_JSON, FileSaveStore, handle_message,
                        render_page, write_rns_config)
@@ -1073,7 +1082,7 @@ class Host:
               file=sys.stderr)
         for stem in sorted(self.destinations):
             d = self.destinations[stem]
-            print(f"jhost:   {stem}: {RNS.prettyhash(d.hash)}",
+            print(f"jhost:   {stem}: {RNS.prettyhexrep(d.hash)}",
                   file=sys.stderr)
 
     def run(self):
@@ -1100,11 +1109,12 @@ class Host:
         router = LXMRouter(identity=ident,
                            storagepath=str(self.data_dir / "lxmf" / stem),
                            name=stem)
-        # stamp_cost=0: free to play (spec §9; stamps are PoW, no credits)
-        router.register_delivery_identity(ident, display_name=stem,
-                                          stamp_cost=0)
-        dl = RNS.Destination(ident, RNS.Destination.IN,
-                             RNS.Destination.SINGLE, "lxmf", "delivery")
+        # stamp_cost=0: free to play (spec §9; stamps are PoW, no credits).
+        # register_delivery_identity creates AND registers the lxmf/delivery
+        # RNS destination and returns it (a second manual RNS.Destination for
+        # the same identity raises "already registered" — verified 1.1.1)
+        dl = router.register_delivery_identity(ident, display_name=stem,
+                                               stamp_cost=0)
         router.register_delivery_callback(
             lambda msg: self._on_message(stem, msg))
         self.routers[stem] = router
@@ -1115,9 +1125,11 @@ class Host:
         with open(story, "rb") as f:
             self.versions[stem] = int.from_bytes(f.read(2), "big")
 
-    def _page_handler(self, *args):
-        # (path, data, request_id, [link_id,] remote_identity, requested_at)
-        games = [(stem, self.versions[stem], RNS.prettyhash(d.hash))
+    def _page_handler(self, path, request_data, request_id,
+                      remote_identity, requested_at):
+        # RNS 1.5.0 response generators must take exactly 5 (or 6) params
+        # (Link.handle_request inspects the signature — verified 1.5.0)
+        games = [(stem, self.versions[stem], RNS.prettyhexrep(d.hash))
                  for stem, d in sorted(self.destinations.items())]
         return render_page(self.name, games).encode()
 
@@ -1129,25 +1141,29 @@ class Host:
                                    msg.signature_validated, self.sessions,
                                    self.store, str(self.stories[stem]),
                                    self.seed)
-        src = RNS.Identity.recall(bytes.fromhex(sender))
+        src = RNS.Identity.recall(msg.source_hash)
         if src is None:
             print(f"jhost: {stem}: cannot recall {sender[:8]} for reply",
                   file=sys.stderr)
             return
         dest = RNS.Destination(src, RNS.Destination.OUT,
                                RNS.Destination.SINGLE, "lxmf", "delivery")
-        # reply pattern verified spec §2; output uncapped (RNS auto-chunks)
-        m = LXMMessage(dest, content=reply.encode(), title=stem)
+        # reply pattern verified spec §2; LXMessage requires an explicit
+        # source (the game's delivery destination); output uncapped
+        m = LXMessage(dest, self.destinations[stem],
+                      content=reply.encode(), title=stem)
         self.routers[stem].handle_outbound(m)
 
     def _announce_all(self):
         self.page_dest.announce(app_data=self.name.encode())
         for stem, d in self.destinations.items():
-            d.announce(app_data=stem.encode())
+            # router.announce() carries the LXMF delivery app_data
+            # (stamp cost) the client needs — verified 1.1.1
+            self.routers[stem].announce(d.hash)
 
     def _write_destinations(self):
-        out = {"page": RNS.prettyhash(self.page_dest.hash),
-               "games": {s: RNS.prettyhash(d.hash)
+        out = {"page": RNS.prettyhexrep(self.page_dest.hash),
+               "games": {s: RNS.prettyhexrep(d.hash)
                          for s, d in sorted(self.destinations.items())}}
         (self.data_dir / DEST_JSON).write_text(json.dumps(out, indent=1))
 ```
@@ -1275,13 +1291,14 @@ def cmd_scan(a):
         if ident is None:
             continue
         try:
-            # RNS 1.5: Destination.hash(public_key, app_name, *aspects);
-            # if it rejects an identity, pass ident.public_key (verify in venv source).
+            # RNS 1.5.0: Destination.hash(identity, app_name, *aspects)
+            # accepts an RNS.Identity directly (Destination.py:116-130 —
+            # verified against installed source).
             page_hash = RNS.Destination.hash(ident, "nomadnetwork", "node")
         except Exception:
             continue
         if page_hash in RNS.Identity.known_destinations:
-            print(f"{app_data.decode(errors='replace')}\t{RNS.prettyhash(page_hash)}")
+            print(f"{app_data.decode(errors='replace')}\t{RNS.prettyhexrep(page_hash)}")
             found += 1
     if not found:
         print("(no page nodes seen — the host must have announced first)",
