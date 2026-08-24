@@ -116,37 +116,62 @@ class TestExtFallback(unittest.TestCase):
     """frotz __extended__ (process.c:641): opcodes outside its 29-entry
     table (0x1D-0xFF) and table slots a text interpreter doesn't
     implement (picture/mouse/undo/menu/colour) CONSUME their operands
-    and do nothing observable — they are not runtime errors. Crafted
-    instruction stream at a writable address: BE <ext> C0 (no
-    operands), jump +4, quit."""
+    and do nothing observable — they are not runtime errors.
+    Trailing byte: result-bearing ext opcodes carry one (frotz handlers
+    call store()); reserved and no-result opcodes do not (Task 10).
+    Crafted instruction streams at a writable address:
+      be <ext> c0 [store] 48 11 02 10 ba
+      48 11 02 10 = 2OP or(var 17, small 2) -> var 16: a desynced decode
+      would misalign this instruction and G16 would not be 14."""
+
+    G16 = 0xA965        # risorg globals base: variable 16
+    G17 = 0xA965 + 2    # variable 17
+
+    EXPECT = 12 | 2  # or(G17, 2)
 
     @staticmethod
-    def _ext_vm(ext_byte):
+    def _ext_vm(ext_byte, store_byte=None):
         sf = StoryFile.load(C / "risorg.z8")
         vm = VM(sf)
-        # crafted instruction stream at a writable address:
-        #   BE <ext> C0   unimplemented/reserved ext, no operands (no-op)
-        #   8C 00 02      jump +2 -> pc = end-of-instruction (a+6)
-        #   BA            quit
         a = sf.header.declared_len + 0x1000  # data-stack area: writable
-        for i, b in enumerate((0xBE, ext_byte, 0xC0, 0x8C, 0x00, 0x02, 0xBA)):
+        code = (0xBE, ext_byte, 0xC0)
+        if store_byte is not None:
+            code += (store_byte,)
+        code += (0x48, 0x11, 0x02, 0x10, 0xBA)  # or G17,small 2 -> G16; quit
+        for i, b in enumerate(code):
             vm.mem.putb(a + i, b)
+        vm.mem.putw(TestExtFallback.G17, 12)
         vm.pc = a
         return vm
 
-    def _assert_noop(self, ext_byte):
-        vm = self._ext_vm(ext_byte)
+    def _assert_noop(self, ext_byte, store_byte):
+        vm = self._ext_vm(ext_byte, store_byte)
         vm.run_until_input()
         self.assertTrue(vm.done)
         self.assertEqual(vm.done_status, 0)  # quit, not a runtime error
         self.assertFalse([e for e in vm.events if isinstance(e, Error)],
                          "unimplemented ext opcode must not raise")
+        # the 2OP or must have executed exactly once, correctly aligned
+        self.assertEqual(vm.mem.getw(self.G16) & 0xFFFF, self.EXPECT)
 
-    def test_unimplemented_ext_is_noop(self):
-        self._assert_noop(0x05)  # draw_picture
+    def test_result_bearing_ext_stores_failure(self):
+        # ext 5 (draw_picture) has a result: the store byte is consumed,
+        # failure (0) is reported to it.
+        vm = self._ext_vm(0x05, 0x00)  # store byte 0 = push
+        vm.run_until_input()
+        self.assertTrue(vm.done and vm.done_status == 0)
+        self.assertEqual(vm.mem.getw(self.G16) & 0xFFFF, self.EXPECT)
+        # the pushed 0 is the stack top
+        self.assertEqual(vm.mem.getw(vm.sp + 2) & 0xFFFF, 0)
 
-    def test_reserved_ext_is_noop(self):
-        self._assert_noop(0x3F)  # >= 0x1D: reserved for future spec
+    def test_reserved_ext_has_no_trailing_byte(self):
+        # ext 0x3F (>= 0x1D, reserved): operands only, no store byte
+        self._assert_noop(0x3F, None)
+
+    def test_no_result_ext_has_no_trailing_byte(self):
+        # ext 8 (set_margins): no result in frotz (z_set_margins never
+        # calls store()) — the next instruction follows immediately
+        self._assert_noop(0x08, None)
 
 
 class TestRisorgV8Session(unittest.TestCase):

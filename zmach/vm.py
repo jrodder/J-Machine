@@ -8,15 +8,23 @@ INV1: output only via self.events. INV2: run_until_input returns only on
 needs_input / done / unrecoverable error.
 """
 import os
-import tempfile
 from dataclasses import dataclass
 
 from . import opcodes as ops
-from .events import EndOfGame, Error, Text
+from .events import EndOfGame, Error, SaveFileError, Text
 from .io import InputBuffer, Vocabulary
 from .memory import Memory
 from .strings import (char_to_zscii, decode_text, encode_text, read_custom_tables,
                       zscii_to_char)
+
+# frotz ext handlers that call store()/branch(): the extended instruction
+# carries a trailing byte (store form; branch form for v3 ext 0/1). The
+# no-result opcodes (set_margins 8, print_unicode 11, window_size 17,
+# window_style 18, read_mouse 22, print_form 26) and reserved 0x1D-0xFF
+# do not (frotz __extended__ returns after the operands). Derived from the
+# frotz 2.55 source per handler (Task 10).
+_EXT_TRAILING = frozenset(
+    {0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 19, 20, 21, 23, 24, 25, 27, 28})
 
 # ponytail: non-spec safety net so a bad story file can't hang a session;
 # raise only if a legitimate game trips it (a normal turn is far below this).
@@ -92,7 +100,14 @@ class VM:
         self.zscii_extra, self.alphabet = read_custom_tables(story)
         self.seed0 = (seed & 0xFFFFFFFF) if seed is not None \
             else int.from_bytes(os.urandom(4), "big")
+        # frotz keeps the RNG in file-scope statics (random.c): the seed
+        # happens ONCE per process and @restart does NOT reseed it.
+        # Mirrored here: seed in __init__ only (never in _init, which
+        # re-runs on @restart).
         self.seed = self.seed0
+        self._rng_a = self.seed0
+        self._rng_interval = 0
+        self._rng_counter = 0
         self.flags2 = h.flags2  # header flags as written back by dfrotz -t
         self.events = []
         self.needs_input = False
@@ -223,8 +238,6 @@ class VM:
         self.sp = self.mem.stack_top
         self.frames = []
         self.catch_stack = []
-        self.seed = self.seed0
-        self._seed_rng(0)
         self._init_io_state()
 
     # ------------------------------------------------- operand plumbing
@@ -431,8 +444,13 @@ class VM:
                     # its 29-entry table (0x1D-0xFF) and table slots a text
                     # interpreter doesn't implement (picture/mouse/undo/
                     # menu/colour) consume their operands and do nothing
-                    # observable — NOT a runtime error. (Undo ext 0x09/0x0A
-                    # is Task 10 territory.)
+                    # observable — NOT a runtime error.
+                    # Trailing byte: frotz's handlers for result-bearing ext
+                    # opcodes call store()/branch() — consume the store byte
+                    # and report failure (0); no-result opcodes and the
+                    # reserved range have none.
+                    if inst - ops.EXT_BASE in _EXT_TRAILING:
+                        self.op_store(0)
                     continue
                 self.raise_err(ops.ERR_ILLEGAL_OPCODE)
                 continue
@@ -947,15 +965,17 @@ class VM:
     # (The old +1013904223 LCG diverged from frotz; seed 10 in planetfall
     # routes the ambassador event differently.)
     def _seed_rng(self, value):
+        # frotz seed_random (random.c): 0 = OS seed, 1-999 = special
+        # (interval) mode, >= 1000 = standard A seed.
         if value == 0:
             self._rng_a = self.seed0
             self._rng_interval = 0
         elif value < 1000:
-            self._rng_counter = 0
             self._rng_interval = value
         else:
             self._rng_a = value & 0xFFFFFFFF
             self._rng_interval = 0
+        self._rng_counter = 0
 
     def op_random(self, o, n):
         k = o[0]
@@ -1410,39 +1430,52 @@ class VM:
         self._ret(0)
 
     def op_save_v3(self, o, n):
+        assert self.input.empty  # spec §7: the library has consumed the line
         ok = self.save_handler(self._decode_hint(o)) if self.save_handler else False
         self._predicate(ok)
 
     def op_restore_v3(self, o, n):
+        assert self.input.empty
         ok = self.restore_handler(self._decode_hint(o)) if self.restore_handler else False
         self._predicate(ok)
 
     def op_save_v5(self, o, n):
+        assert self.input.empty
         ok = self.save_handler(self._decode_hint(o)) if self.save_handler else False
         self.op_store(1 if ok else 0)
 
     def op_restore_v5(self, o, n):
+        assert self.input.empty
         ok = self.restore_handler(self._decode_hint(o)) if self.restore_handler else False
-        self.op_store(1 if ok else 0)
+        # frotz restore_quetzal (fastmem.c): returns 2 on success, 0 on
+        # pre-damage failure (-1 = fatal, the game dies before storing)
+        self.op_store(2 if ok else 0)
 
     def _stub_save(self, hint):
-        # ponytail: stub until task 10 — whole dynamic memory to a temp
-        # file; frame locals (interpreter-side) are not restored.
-        fd, self._stub_save_path = tempfile.mkstemp()
-        with os.fdopen(fd, "wb") as f:
-            f.write(bytes(self.mem.mem))
-        return True
+        # ponytail: host-side save — ZMSAVE v1 image to a file (in-game
+        # SAVE works out of the box; the CLI / Phase 2 server replaces
+        # these with slot-based handlers).
+        from . import savefile
+        path = hint or self._stub_save_path or "zmach-save.bin"
+        try:
+            with open(path, "wb") as f:
+                f.write(savefile.encode(self))
+            self._stub_save_path = path
+            return True
+        except OSError:
+            return False
 
     def _stub_restore(self, hint):
+        from . import savefile
+        path = hint or self._stub_save_path
+        if not path:
+            return False
         try:
-            with open(self._stub_save_path, "rb") as f:
-                data = f.read()
-        except (OSError, TypeError):
+            with open(path, "rb") as f:
+                savefile.decode(self, f.read())
+            return True
+        except (OSError, SaveFileError):
             return False
-        if len(data) < len(self.mem.mem):
-            return False
-        self.mem.mem[:len(data)] = data
-        return True
 
     def _decode_hint(self, o):
         if not o:
@@ -1566,13 +1599,25 @@ class VM:
         if self.version < 5:
             # v1-v4 forms (ZSpec §14 version columns)
             H[143] = self.op_not
-            H[181] = self.op_save_v3
-            H[182] = self.op_restore_v3
             H[185] = self.op_pop  # v1-v4: pop (0xB9); catch is v5+ only
-            H[188] = self.op_show_status  # v3 interpreter-drawn status line
-            H[ops.EXT_BASE + 15] = self._noop  # split_window: text model
+            # frotz's single 0OP table maps 0xB5/0xB6 to z_save/z_restore in
+            # every version: branch form in v3, store form in v4+ (fastmem.c
+            # z_save: version <= V3 -> branch, else store). The EXT forms
+            # (BE 00/01) follow the same split.
+            if self.version == 3:
+                H[181] = self.op_save_v3
+                H[182] = self.op_restore_v3
+                H[188] = self.op_show_status  # v3 interpreter-drawn status line
+                H[ops.EXT_BASE + 0] = self.op_save_v3
+                H[ops.EXT_BASE + 1] = self.op_restore_v3
+                H[ops.EXT_BASE + 15] = self._noop  # split_window: text model
+            else:
+                H[181] = self.op_save_v5
+                H[182] = self.op_restore_v5
         else:
             H[143] = self.op_call_1n
+            H[181] = self.op_save_v5
+            H[182] = self.op_restore_v5
             H[185] = self.op_catch
             H[188] = self._noop  # show_status illegal in v5+; nop per ZSpec
             H[248] = self.op_not

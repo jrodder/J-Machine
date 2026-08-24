@@ -1355,7 +1355,14 @@ and is byte-exact.)
     - `save`: `assert vm.input_buffer.empty()` (spec §7 precondition); `savefile.encode(vm)`.
     - `restore`: `savefile.decode(vm, image)`; run to next boundary; return events.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
+
+**Plan test defect found and corrected:** the round-trip test below feeds an
+EXTRA `look` after `restore` (line `out += s.input("look")`), which makes
+`a` and `b` provably unequal (b has one more command). Corrected design:
+save BEFORE feeding the `restore_at`-th line, then continue with the SAME
+remaining lines; the transcripts must be identical. Implemented as
+`play_text` in tests/test_savefile.py.
 
 ```python
 # tests/test_savefile.py
@@ -1387,15 +1394,45 @@ class TestSaveRoundTrip(unittest.TestCase):
 
 (plus `tests/test_session.py`: event types from `load`, `Prompt` after each `input`, `done` after quit, `StoryInfo` fields, `restore` with corrupted trailer → `SaveFileError`, story-hash mismatch between planetfall save and zork1 session → `SaveFileError`.)
 
-- [ ] **Step 2: Run, verify FAIL**
+- [x] **Step 2: Run, verify FAIL** (new tests fail: `zmach.savefile`/`zmach.session` do not exist yet)
 
-- [ ] **Step 3: Implement savefile.py + Session + opcode wiring** (save/restore opcode: v3 branch form 0x05/0x06 with handler filename prompt; v5 EXT:0/1 with result 0 (fail) / 1 (success) — handler returns bool; the opcode also handles the "no handler installed → error 424/425" path)
+- [x] **Step 3: Implement savefile.py + Session + opcode wiring**
 
-- [ ] **Step 4: Run, verify PASS** (round-trip byte-identical, incl. RNG continuity across restore — this is the Phase 2 reconnect guarantee)
+  Rulings (documented in task-10-report + zmach/savefile.py header):
+  - ZMSAVE layout amended from spec §7 (variable image size + explicit
+    u32 length — 512 KB uniform is impossible, risorg memory is 0xAC368;
+    inline frame locals (locals live outside story memory) → 42-byte
+    frames with locals[15] u16; added missing pc u32; full RNG triple
+    instead of seed-only; JSON state block for the IO/pending/MORE/
+    output-stream-3 interpreter state so a restore into a FRESH VM is
+    byte-identical to a never-saved run — the reconnect guarantee).
+  - No-handler path: failure (store 0 / branch not taken), NOT a runtime
+    error — the handler contract is `bool`; the plan's "error 424/425"
+    doesn't exist in the Z-machine error space. In-game OS filename
+    prompting is the handler/CLI layer's job (spec §5); the opcode hands
+    the handler the filename hint from its string operand.
+  - frotz conformance fixes (2.55 source, /tmp/frotz-2.55):
+    - ext opcodes: frotz `__extended__` handlers for result-bearing ops
+      call store()/branch() — a TRAILING BYTE exists and is consumed.
+      WITH: {0,1,2,3,4,5,6,7,9,10,12,13,16,19,20,21,23,24,25,27,28};
+      WITHOUT: {8,11,14,15,17,18,22,26} and ≥ 0x1D (no-op after operands).
+      The no-handler fallback mirrors this (store 0 where the byte exists).
+    - v3 save/restore (0xB5/0xB6 and EXT:0/1) are BRANCH form; v4+ is
+      store form (frotz fastmem.c z_save: `version <= V3` split; frotz
+      uses one 0OP table for all versions).
+    - restore stores **2** on success (frotz restore_quetzal returns 2),
+      0 on failure.
+    - frotz keeps the RNG in file-scope statics (random.c): @restart does
+      NOT reseed. Our `_init` reseeded every @restart — fixed: seed once
+      in `__init__`; `_rng_counter` is now always initialized (latent
+      AttributeError in standard mode).
 
-Run: `python3 -m unittest tests.test_savefile tests.test_session -v`
+- [x] **Step 4: Run, verify PASS** — 24 new tests (tests/test_savefile.py
+  14, tests/test_session.py 10) + full suite 91/91 under `ulimit -v
+  1572864`; all 9 byte-exact conformance sessions stay green after the
+  ext trailing-byte and restart-seed changes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 `git add -A && git commit -m "feat: ZMSAVE v1 save/restore, in-game save opcodes, Session API"`
 
