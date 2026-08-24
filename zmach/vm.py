@@ -568,6 +568,37 @@ class VM:
             z += doff + psize
         return None
 
+    # --- public object API (tests + future tasks; opcodes use the private
+    # forms above, same code paths)
+    def obj_entry(self, obj):
+        """Byte address of object obj's table entry (ZMS sect12.3)."""
+        return self.objects_base + obj * self.obj_size
+
+    def get_parent(self, obj):
+        return self._obj_field(obj, self._off_parent)
+
+    def get_sibling(self, obj):
+        return self._obj_field(obj, self._off_sibling)
+
+    def get_child(self, obj):
+        return self._obj_field(obj, self._off_child)
+
+    def test_attr(self, obj, attr):
+        f = self._flagset(obj, attr)
+        return bool(f and f[2] & f[1])
+
+    def get_prop(self, obj, prop):
+        """op_get_prop value semantics: 1-byte props zero-extend; missing
+        props fall back to the defaults table (defprop + 2*prop)."""
+        f = self._propfind(obj, prop)
+        if f:
+            return self.mem.getw(f[0]) if f[1] == 2 else self.mem.getb(f[0])
+        return self.mem.getw(self.defprop + 2 * prop)
+
+    def get_prop_addr(self, obj, prop):
+        f = self._propfind(obj, prop)
+        return f[0] if f else 0
+
     def _move_obj(self, x, y):
         if x == 0:
             return
