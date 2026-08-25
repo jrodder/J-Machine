@@ -57,3 +57,48 @@ Phase 2 (spec §12) adds the Reticulum game host as a second consumer of
 `reticulum → session`. Multi-session via a `{reticulum_identity: Session}`
 map with autosave-per-turn; restore-on-reconnect is exactly the
 fresh-session restore flow validated by gate 3.
+
+## Phase 2 — Reticulum game host (jhost)
+
+`zmach` (Phase 1) is consumed by the host exactly like the CLI: one
+`Session` per (game, player), the VM parked at every turn boundary.
+`jhost/protocol.py` holds the whole game protocol as pure functions;
+`jhost/host.py` is the thin RNS/LXMF wiring.
+
+### Run it
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install "rns>=1.5,<1.6" "lxmf>=1.1,<1.2"
+.venv/bin/python -m jhost games/ --data-dir data/
+```
+
+1. First run scaffolds `data/` (minimal loopback RNS config + per-game
+   identities) and prints the page-node and per-game LXMF addresses
+   (also in `data/host-destinations.json` — the operator record of
+   "what to tell people"). Addresses are stable across restarts
+   (persisted identities).
+2. Edit `data/rns/config`: add your transports — Reticulum testnet TCP
+   endpoints (operator-supplied; the endpoints move, so nothing is
+   hardcoded) and/or an `RNodeInterface` section for a LoRa net.
+   Restart.
+3. Players: browse the NomadNet micron page (share the page-node hash
+   out-of-band) and send messages to a game's LXMF address — or use the
+   test client, which mirrors Sideband's wire path:
+
+```bash
+.venv/bin/python -m jclient scan --data-dir ~/.jclient --identity ~/.jclient/identity
+.venv/bin/python -m jclient browse <page-node-hash> --data-dir ~/.jclient --identity ~/.jclient/identity
+echo "look" | .venv/bin/python -m jclient play <game-address> --data-dir ~/.jclient --identity ~/.jclient/identity
+```
+
+The client identity file IS the player's save slot; the host autosaves
+after every turn to `data/saves/<game>/<player-hash>.zmsv`. A player who
+disappears for days reconnects to exactly where they left off.
+In-game `save`/`restore` verbs map to that slot with no prompt.
+
+### Verify
+
+`python3 scripts/run_done.py` — Phase 1 gates + the Phase 2 network gate
+(RNS rig: page discovery, 10-command dfrotz byte-parity over the wire,
+reconnect byte-identity, two players, in-game save/restore). Network
+gates skip when `rns`/`lxmf` are not installed.

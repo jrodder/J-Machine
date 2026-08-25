@@ -74,12 +74,28 @@ def gate_save_roundtrip():
                     "fresh-session restore (planetfall.z5)")
 
 
+def gate_network():
+    """Phase 2 gates (spec §7 done bar 2-5): the RNS rig suite (smoke +
+    tests 1-5) under the venv interpreter. Skips cleanly when .venv or
+    rns/lxmf are absent (the stdlib suite stays green anywhere)."""
+    py = ROOT / ".venv" / "bin" / "python"
+    if not py.exists():
+        return True, "skipped (no .venv)"
+    probe = subprocess.run([str(py), "-c", "import RNS, LXMF"],
+                           capture_output=True, cwd=ROOT)
+    if probe.returncode != 0:
+        return True, "skipped (rns/lxmf not in .venv)"
+    return _run([str(py), "-m", "unittest", "discover", "-s", "tests",
+                 "-p", "test_net*.py"])
+
+
 def main():
     gates = [
         ("1. Conformance", gate_conformance),
         ("2. Differential vs dfrotz", gate_differential),
         ("3. Save round-trip", gate_save_roundtrip),
         ("4. Fake transport", gate_faketx),
+        ("5. Network: RNS rig (Phase 2)", gate_network),
         ("all unit tests", gate_unit_tests),
     ]
     results = [(name, fn()) for name, fn in gates]
@@ -90,8 +106,9 @@ def main():
     for name, (ok, detail) in results:
         print(f"{'✓' if ok else '✗'} {name:<26} {detail}")
         failed += (not ok)
-    print("? 5. Smoke (manual)            play the corpus games to a known "
-          "point in a real terminal")
+    print("? 6. Smoke (manual)            Phase 1: play the corpus games in a "
+          "real terminal; Phase 2: Sideband phone on the testnet — page "
+          "visible, play a few turns, reconnect restores")
     print("-" * 62)
     print("PASS" if failed == 0 else f"FAIL ({failed} gate(s))")
     return 1 if failed else 0
