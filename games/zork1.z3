@@ -1,0 +1,1 @@
+../tests/corpus/zork1.z3

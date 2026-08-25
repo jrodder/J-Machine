@@ -12,3 +12,7 @@ zmach-save.bin
 # player save slots, ratchets, announce cache — operator-owned, never
 # versioned. Back up data/ separately (tarball) if it matters.
 data/
+
+# scratch Quetzal save games from manual play-testing
+*.qzl
+/restore
