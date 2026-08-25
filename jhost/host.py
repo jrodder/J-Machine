@@ -17,17 +17,24 @@ from LXMF import LXMessage, LXMRouter
 from .protocol import (DEST_JSON, FileSaveStore, handle_message,
                        player_stats, render_page, write_rns_config)
 
-ANNOUNCE_INTERVAL = 300  # seconds (spec §3)
+
+# re-announce cadence default: 15 min (operator ruling 2026-08-25;
+# was 300 s — spec §3). Keeps the page node + game addresses in the
+# NomadNet node list for late joiners (initial ~11 s retransmit window).
+DEFAULT_ANNOUNCE_INTERVAL = 15 * 60
 
 
 class Host:
     def __init__(self, data_dir, games_dir, name="J-Machine Games",
-                 seed=None, port=4242):
+                 seed=None, port=4242, announce_interval=None):
         self.data_dir = Path(data_dir)
         self.games_dir = Path(games_dir)
         self.name = name
         self.seed = seed
         self.port = port
+        self.announce_interval = (announce_interval
+                                  if announce_interval is not None
+                                  else DEFAULT_ANNOUNCE_INTERVAL)
         self.lock = threading.Lock()
         self.sessions = {}            # {(game, sender): GameState}
         self.store = FileSaveStore(self.data_dir / "saves")
@@ -69,9 +76,9 @@ class Host:
                   file=sys.stderr)
 
     def run(self):
-        """Block, re-announcing on the interval (spec §3)."""
+        """Block, re-announcing on self.announce_interval (spec §3)."""
         while True:
-            time.sleep(ANNOUNCE_INTERVAL)
+            time.sleep(self.announce_interval)
             self._announce_all()
 
     # ------------------------------------------------ internals

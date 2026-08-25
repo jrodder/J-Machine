@@ -180,11 +180,13 @@ loglevel = 5
 One process on the VPS, one RNS instance:
 
 ```
-jhost  (python3 -m jhost <games-dir> [--data-dir DIR] [--name NAME] [--seed N])
+jhost  (python3 -m jhost <games-dir> [--data-dir DIR] [--name NAME] [--seed N]
+        [--port N] [--announce-interval MIN])
 ├── RNS instance (config: data/rns/config)
 ├── page destination      nomadnetwork.node     identity: data/identities/page
 │     /page/index.mu      micron page: one section per game with its LXMF address
-│     announced every 300 s, app_data = node name (default "J-Machine Games")
+│     announced every --announce-interval (default 15 min; 2026-08-25 —
+│     was a hardcoded 300 s), app_data = node name (default "J-Machine Games")
 └── per game (one per story file in <games-dir>):
       identity            data/identities/<stem>      (persisted → static address)
       LXMRouter           storage: data/lxmf/<stem>
@@ -211,9 +213,11 @@ Global (shared by all games): session map {(game, player_hexhash): Session}
 - **Startup:** missing config dir → scaffold minimal config (internal-test shape,
   loopback server on 127.0.0.1:4242) and print where to add the real transport.
   Missing identities → generate and persist. Announce immediately, then on the
-  interval (both the page destination and each game's delivery destination, with
-  the game name as app_data, so the host's node list shows "J-Machine Games",
-  "Zork I", "Planetfall").
+  re-announce interval — `--announce-interval MIN` (minutes, default 15; 2026-08-25,
+  was hardcoded 300 s; operator knob: a VPS that always has a path needs a
+  slower cadence, a flaky LoRa node a faster one) — both the page destination
+  and each game's delivery destination, with the game name as app_data, so the
+  host's node list shows "J-Machine Games", "Zork I", "Planetfall".
 - **Runtime dependency:** `rns>=1.5,<1.6` (+ `lxmf>=1.1,<1.2`, which requires rns
   1.5.x). Declared in `pyproject.toml`. `zmach/` and its tests never import them.
 

@@ -252,5 +252,24 @@ class Network(unittest.TestCase):
                 self.assertEqual(norm(out1 + out2), norm(ref))
 
 
+@unittest.skipUnless(HAVE_RNS, "rns/lxmf not installed (pip install rns lxmf)")
+class AnnounceInterval(unittest.TestCase):
+    """spec §3: the re-announce cadence is a host setting (operator
+    knobs live in the RNS config; this one is a launch flag because the
+    cadence is host-process policy). Default 15 min (operator ruling
+    2026-08-25). Host.__init__ has no RNS side effects -> instant."""
+
+    def test_default_15_minutes(self):
+        from jhost.host import Host
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(Host(d, d).announce_interval, 15 * 60)
+
+    def test_custom(self):
+        from jhost.host import Host
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(Host(d, d, announce_interval=7 * 60)
+                             .announce_interval, 420)
+
+
 if __name__ == "__main__":
     unittest.main()
