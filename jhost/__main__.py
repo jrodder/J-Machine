@@ -9,7 +9,7 @@ def main():
     ap = argparse.ArgumentParser(prog="jhost")
     ap.add_argument("games_dir")
     ap.add_argument("--data-dir", default="data")
-    ap.add_argument("--name", default="J-Machine Games")
+    ap.add_argument("--name", default="🕹️ J-Machine Games 🕹️")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--port", type=int, default=4242)
     ap.add_argument("--announce-interval", type=int, default=15,

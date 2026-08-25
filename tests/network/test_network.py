@@ -8,9 +8,13 @@ Each test: real host process (python -m jhost, own port + temp data dir)
     combined transcript byte-identical to the uninterrupted dfrotz run
   4 two players interleave, no cross-talk
   5 in-game save/restore opcodes over the wire; slot file rewritten
+  6 games/<stem>.pdf manual: micron link on the page, fetched bytes
+    identical over the wire
 """
 import contextlib
 import json
+import os
+import re
 import sys
 import tempfile
 import time
@@ -250,6 +254,44 @@ class Network(unittest.TestCase):
                                           "look"],
                                          seed=SEED, handlers=handlers)
                 self.assertEqual(norm(out1 + out2), norm(ref))
+
+    def test_6_manual_download(self):
+        """games/<stem>.pdf -> the page's game block carries a micron
+        `[manual`<hash>:/file/<stem>.pdf]` link (NomadNet Guide URL
+        format); fetching the linked /file path over the wire (page
+        destination) returns the file's exact bytes (spec §6)."""
+        pdf = b"%PDF-1.4\n" + os.urandom(256 * 1024)
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "games").mkdir()
+            (d / "games" / "planetfall.pdf").write_bytes(pdf)
+            h, dests = start_host(d, ["planetfall.z5"], 4346)
+            try:
+                work = d / "c6"
+                rc, out, _ = netrig.run_captured(
+                    [sys.executable, "-u", "-m", "jclient", "browse",
+                     dests["page"], "--data-dir", str(work),
+                     "--identity", str(work / "identity"),
+                     "--port", "4346"], "browse", work, timeout=180)
+                self.assertEqual(rc, 0, out + "\n" + netrig.logs_tail(work))
+                m = re.search(r"`\[manual`([0-9a-fA-F]{32}):"
+                              r"/file/planetfall\.pdf\]", out)
+                self.assertIsNotNone(m, out)
+                self.assertEqual(m.group(1),
+                                 dests["page"].strip("<>").replace(":", ""))
+                outp = work / "planetfall.pdf"
+                rc2, out2, _ = netrig.run_captured(
+                    [sys.executable, "-u", "-m", "jclient", "fetch",
+                     dests["page"], "/file/planetfall.pdf",
+                     "--out", str(outp),
+                     "--data-dir", str(work),
+                     "--identity", str(work / "identity"),
+                     "--port", "4346"], "fetch", work, timeout=600)
+                self.assertEqual(rc2, 0,
+                                 out2 + "\n" + netrig.logs_tail(work))
+                self.assertEqual(outp.read_bytes(), pdf)
+            finally:
+                stop_host(h)
 
 
 @unittest.skipUnless(HAVE_RNS, "rns/lxmf not installed (pip install rns lxmf)")

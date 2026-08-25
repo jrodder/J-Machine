@@ -25,7 +25,7 @@ DEFAULT_ANNOUNCE_INTERVAL = 15 * 60
 
 
 class Host:
-    def __init__(self, data_dir, games_dir, name="J-Machine Games",
+    def __init__(self, data_dir, games_dir, name="🕹️ J-Machine Games 🕹️",
                  seed=None, port=4242, announce_interval=None):
         self.data_dir = Path(data_dir)
         self.games_dir = Path(games_dir)
@@ -42,6 +42,7 @@ class Host:
         self.destinations = {}        # stem -> delivery Destination
         self.stories = {}             # stem -> story Path
         self.versions = {}            # stem -> header version (read once)
+        self.manuals = {}             # stem -> games/<stem>.pdf Path
         self.page_dest = None
 
     # ------------------------------------------------ lifecycle
@@ -110,10 +111,31 @@ class Host:
         self.routers[stem] = router
         self.destinations[stem] = dl
         self.stories[stem] = story
-        # header bytes 0-1 = version (Phase 1 verified fact); read once,
-        # not per page render
+        # header byte 0 = version (byte 1 is 0x00 — a 2-byte read yields
+        # 768/1280/2048, the v768 bug); read once, not per page render
         with open(story, "rb") as f:
-            self.versions[stem] = int.from_bytes(f.read(2), "big")
+            self.versions[stem] = f.read(1)[0]
+        manual = self.games_dir / f"{stem}.pdf"
+        if manual.exists():
+            # served from the PAGE destination (the public one) under the
+            # /file path — NomadNet's convention for downloadable files
+            # (NomadNet Guide: pages /page, files /file); exact-path handler
+            # (RNS has no wildcards). Response is the canonical NomadNet
+            # serve_file shape: [open file handle, {name: filename}] —
+            # RNS turns that into a streaming Resource response with
+            # metadata (Link.handle_request), and that is what the clients
+            # expect (verified: NomadNet Node.py serve_file, meshchat's
+            # NomadnetFileDownloader). auto_compress off: PDFs are binary.
+            # ponytail: no per-request path validation beyond the exact
+            # registered path (the handler map IS the allow-list)
+            p = manual
+            name = manual.name
+            self.page_dest.register_request_handler(
+                f"/file/{stem}.pdf",
+                lambda path, data, rid, remote, requested_at:
+                    [open(p, "rb"), {"name": name.encode()}],
+                allow=RNS.Destination.ALLOW_ALL, auto_compress=False)
+            self.manuals[stem] = manual
 
     def _page_handler(self, path, request_data, request_id,
                       remote_identity, requested_at):
@@ -124,7 +146,11 @@ class Host:
         # page is rendered per request (spec §6): stats computed fresh from
         # the slot files — a handful of file stats, no cache to invalidate
         stats = player_stats(self.store.root)
-        return render_page(self.name, games, stats).encode()
+        page_hex = RNS.hexrep(self.page_dest.hash, delimit=False)
+        # micron URL format (NomadNet Guide): <32-hex dest hash>:<path>
+        # — rns:// URLs are for terminal tools (rngit/rnsh), not micron
+        manuals = {s: f"{page_hex}:/file/{s}.pdf" for s in self.manuals}
+        return render_page(self.name, games, stats, manuals=manuals).encode()
 
     def _on_message(self, stem, msg):
         sender = msg.source_hash.hex()
@@ -148,6 +174,10 @@ class Host:
         self.routers[stem].handle_outbound(m)
 
     def _announce_all(self):
+        # the announce itself is silent at loglevel 6 — this line is the
+        # operator's proof the 15-min cycle (and the startup announce)
+        # is actually firing
+        print("jhost: announcing page + games", file=sys.stderr)
         self.page_dest.announce(app_data=self.name.encode())
         for stem, d in self.destinations.items():
             # router.announce() carries the LXMF delivery app_data

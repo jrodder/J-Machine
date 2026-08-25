@@ -69,11 +69,14 @@ class Client:
         raise RuntimeError(f"cannot recall {what} after {timeout}s "
                            f"(was it announced? check host logs)")
 
-    def request(self, dest, path, timeout=30):
+    def request(self, dest, path, timeout=30, max_response_size=65536):
         """RNS request/response (page fetch). Returns the response bytes.
         A Link establishes asynchronously (verified+encrypted handshake);
         request() needs the link ACTIVE (mdu is set on establishment,
-        site-packages/RNS/Link.py) — wait for that first."""
+        site-packages/RNS/Link.py) — wait for that first.
+        max_response_size=None accepts any size (manual PDFs are MBs; a
+        large response arrives chunked via RNS.Resource, completing on
+        this same callback — verified Link.py response_resource_concluded)."""
         got = []
         link = RNS.Link(dest)
         deadline = time.time() + timeout
@@ -81,10 +84,20 @@ class Client:
             time.sleep(0.5)
         if link.status != RNS.Link.ACTIVE:
             return None
+        def _recv(r):
+            # file responses (NomadNet serve_file shape) arrive as a
+            # BufferedReader when chunked via RNS.Resource — and RNS
+            # closes the handle + unlinks the storage file right after
+            # this callback returns (Resource.py assemble), so the read
+            # must happen here, not later
+            data = r.response
+            if hasattr(data, "read"):
+                data = data.read()
+            got.append(data)
         link.request(path, b"",
-                     lambda r: got.append(r.response),
+                     _recv,
                      None, None, timeout=timeout,
-                     max_response_size=65536)
+                     max_response_size=max_response_size)
         deadline = time.time() + timeout
         while not got and time.time() < deadline:
             time.sleep(1)

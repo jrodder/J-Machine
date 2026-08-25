@@ -248,12 +248,33 @@ class Helpers(unittest.TestCase):
                             ("planetfall", 5, "<90:12:34>")],
                            PlayerStats({"zork1": (1, 2, 2),
                                         "planetfall": (0, 0, 1)}, 2))
-        self.assertTrue(page.startswith(">J-Machine Games\n>"))
+        self.assertTrue(page.startswith(">`!J-Machine Games`!\n>"))
         self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n"
                       "  1 today · 2 this week · 2 this month", page)
         self.assertIn("> planetfall (v5)\n  <90:12:34>\n"
                       "  0 today · 0 this week · 1 this month", page)
         self.assertIn("2 players all time", page)
+        # manual line: only for games in the manuals mapping, in the
+        # canonical micron form `[label`<hash>:/file/<name>] (NomadNet
+        # Guide), and the url must survive parse_page's regexes untouched
+        paged = render_page("J-Machine Games",
+                            [("zork1", 3, "<ab:cd:ef>"),
+                             ("planetfall", 5, "<90:12:34>")],
+                            PlayerStats({"zork1": (1, 2, 2),
+                                         "planetfall": (0, 0, 1)}, 2),
+                            manuals={"zork1": "ab:/file/zork1.pdf"})
+        self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n"
+                      "  1 today · 2 this week · 2 this month\n"
+                      "  `[manual`ab:/file/zork1.pdf]", paged)
+        self.assertNotIn("`[manual`", paged.split("> planetfall")[1])
+        # the manual line must match neither parse_page pattern (the
+        # real parse_page is exercised over the wire in the network
+        # suite — jclient is RNS-importing and this file is not)
+        import re
+        game_lines = re.findall(r"^> (\S+) \(v(\d+)\)\s*$", paged, re.M)
+        self.assertEqual(game_lines, [("zork1", "3"), ("planetfall", "5")])
+        addrs = re.findall(r"^\s{2}(<[0-9a-fA-F:]+>)\s*$", paged, re.M)
+        self.assertEqual(addrs, ["<ab:cd:ef>", "<90:12:34>"])
 
     def test_write_rns_config(self):
         with tempfile.TemporaryDirectory() as d:

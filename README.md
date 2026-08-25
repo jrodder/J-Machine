@@ -89,7 +89,17 @@ python3 -m venv .venv && .venv/bin/pip install "rns>=1.5,<1.6" "lxmf>=1.1,<1.2"
 .venv/bin/python -m jclient scan --data-dir ~/.jclient --identity ~/.jclient/identity
 .venv/bin/python -m jclient browse <page-node-hash> --data-dir ~/.jclient --identity ~/.jclient/identity
 echo "look" | .venv/bin/python -m jclient play <game-address> --data-dir ~/.jclient --identity ~/.jclient/identity
+.venv/bin/python -m jclient fetch <page-node-hash> /file/<game>.pdf --out <game>.pdf --data-dir ~/.jclient --identity ~/.jclient/identity
 ```
+
+A game with a `<game>.pdf` sitting next to its story in `games/` gets a
+``[manual`<page-node-hash>:/file/<game>.pdf]`` micron link under its block on
+the page — the PDF is served from the page node on request (the canonical
+micron URL form per the NomadNet Guide: files live under `/file`; this is
+how the Infocom copy-protection manuals ship alongside the story).
+`jclient fetch` downloads it; any micron client that follows file links can
+too. Large responses are chunked by RNS.Resource transparently, so multi-MB
+manuals work over the same request path as the page itself.
 
 The client identity file IS the player's save slot; the host autosaves after
 every turn (held while an in-game `save` image is pending, rewritten by the

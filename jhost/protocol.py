@@ -196,16 +196,26 @@ def _autosave(store, game, sender, s):
               file=sys.stderr)
 
 
-def render_page(name, games, stats):
+def render_page(name, games, stats, manuals=None):
     """Micron page text (spec §6). games = [(stem, version, addr_str)];
     addr_str = pretty hexrep of the game's lxmf.delivery destination hash.
     stats = player_stats(...) — per-game today/week/month + the all-time
     player bar (spec §6). The stats lines are plain indented text that
     parse_page's regexes ignore (verified by the network suite's live
-    browse+parse)."""
+    browse+parse). manuals = {stem: url} — a game with a manual gets a
+    micron file link line under its block: `[manual`<hash>:/file/<stem>.pdf]
+    (NomadNet Guide micron spec: links are backtick-delimited `[label`url]`,
+    not markdown [label](url); files are served under the /file path). url
+    = <32-hex page-dest hash>:/file/<stem>.pdf. parse_page ignores the line:
+    neither the '> name (vN)' nor the '<hex>' pattern matches it."""
     def plural(n, one, many):
         return one if n == 1 else many
-    lines = [f">{name}", ">",
+    # H1 title bolded (micron `! toggle). The announce app_data is plain
+    # UTF-8 — meshchat renders it unformatted (parse_nomadnetwork_node_
+    # display_name = app_data.decode), so the page is the only place the
+    # name can carry styling. Bold via `!NAME`! (verified against the
+    # reference + meshchat MicronParser formatting-mode handling).
+    lines = [">`!" + name + "`!", ">",
              "One-line Z-machine games over Reticulum.",
              "Send any message to a game's address to play;",
              "progress is saved per player automatically.",
@@ -217,6 +227,13 @@ def render_page(name, games, stats):
         lines.append(f"  {addr}")
         t, w, m = stats.per_game.get(stem, (0, 0, 0))
         lines.append(f"  {t} today · {w} this week · {m} this month")
+        if manuals and stem in manuals:
+            # micron link syntax: leading backtick enters format mode, then
+            # `[label`url] (verified: NomadNet Guide.py + reference
+            # MicronParser.py + meshchat's MicronParser.js). Concatenated,
+            # not an f-string: a literal '[' plus a subscript expression
+            # trips PEP 701 bracket matching in CPython 3.14 (SyntaxError)
+            lines.append("  `[manual`" + manuals[stem] + "]")
     return "\n".join(lines) + "\n"
 
 

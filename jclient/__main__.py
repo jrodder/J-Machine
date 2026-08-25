@@ -90,6 +90,24 @@ def cmd_play(a):
     return 0
 
 
+def cmd_fetch(a):
+    """Download a file served by a page destination (manual PDF, spec §6).
+    Writes the exact response bytes to --out (default: basename of path)."""
+    c = Client(a.data_dir, a.identity, name="jclient", port=a.port)
+    ident = c.recall(unpretty(a.dest_address), "destination")
+    dest = RNS.Destination(ident, RNS.Destination.OUT, RNS.Destination.SINGLE,
+                           "nomadnetwork", "node")
+    data = c.request(dest, a.path, timeout=a.timeout,
+                     max_response_size=a.max_size)
+    if data is None:
+        print("fetch failed (no response)", file=sys.stderr)
+        return 1
+    out = Path(a.out) if a.out else Path(a.path).name
+    out.write_bytes(data)
+    print(f"fetched {len(data)} bytes -> {out}", file=sys.stderr)
+    return 0
+
+
 def cmd_smoke(a):
     c = Client(a.data_dir, Path(a.data_dir) / "identity", name="jclient")
     dests = json.loads(Path(a.host_json).read_text())
@@ -124,9 +142,20 @@ if __name__ == "__main__":
         s.add_argument("--port", type=int, default=4242)
     sub.choices["browse"].add_argument("page_hash")
     sub.choices["play"].add_argument("game_address")
+    s = sub.add_parser("fetch")
+    s.add_argument("dest_address")
+    s.add_argument("path")
+    s.add_argument("--out", default=None)
+    s.add_argument("--max-size", type=int, default=None,
+                   help="max accepted response bytes (default: no cap)")
+    s.add_argument("--timeout", type=int, default=600,
+                   help="seconds to wait for the link + response")
+    s.add_argument("--data-dir", default=".jclient")
+    s.add_argument("--identity", default=".jclient/identity")
+    s.add_argument("--port", type=int, default=4242)
     s = sub.add_parser("smoke")
     s.add_argument("--data-dir", required=True)
     s.add_argument("--host-json", required=True)
     a = ap.parse_args()
     sys.exit({"scan": cmd_scan, "browse": cmd_browse, "play": cmd_play,
-              "smoke": cmd_smoke}[a.cmd](a))
+              "fetch": cmd_fetch, "smoke": cmd_smoke}[a.cmd](a))
