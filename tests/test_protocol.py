@@ -1,8 +1,8 @@
 """Spec §7 tests 6-7: protocol edge-behavior table + save sanity.
 No RNS import — milliseconds each."""
+import datetime
 import os
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -188,43 +188,49 @@ class Protocol(unittest.TestCase):
 
 
 class PlayerStatsTests(unittest.TestCase):
-    """spec §6 page stats: the autosave slot files ARE the player registry
-    (one per (game, player), rewritten every turn, never deleted — spec §5),
-    so count = players ever, mtime = last turn."""
+    """spec §6 page stats: the autosave slot files ARE the player
+    registry (one per (game, player), rewritten every turn, never
+    deleted — spec §5), so mtime = last turn. Per-game line: today /
+    this week / this month (host local clock: since midnight, this
+    Monday, this 1st). Overall bar: all-time unique, all games.
+    NOW is a fixed Tuesday (2026-08-25 12:00) -> the week starts
+    Monday 2026-08-24 00:00 and the month 2026-08-01 00:00."""
 
-    def _slot(self, root, game, sender, age=0.0):
+    NOW = datetime.datetime(2026, 8, 25, 12, 0).timestamp()
+
+    def _slot(self, root, game, sender, age_h):
         p = root / game / f"{sender}.zmsv"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"img")
-        if age:
-            t = time.time() - age
-            os.utime(p, (t, t))
+        t = self.NOW - age_h * 3600
+        os.utime(p, (t, t))
         return p
 
-    def test_counts_dedup_and_window(self):
+    def test_counts_dedup_and_windows(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            now = time.time()
-            a, b, c = "aa" * 16, "bb" * 16, "cc" * 16
-            self._slot(root, "zork1", a)          # fresh
-            self._slot(root, "zork1", b)          # fresh
-            self._slot(root, "planetfall", a)     # same person, second game
-            self._slot(root, "planetfall", c, age=2 * 24 * 3600)  # stale
-            st = player_stats(root, now=now)
-            self.assertEqual(st.per_game, {"zork1": 2, "planetfall": 2})
-            self.assertEqual(st.total, 3)   # a dedupes across games
-            self.assertEqual(st.recent, 2)  # c outside the 24 h window
+            a, b, c, dd = "aa" * 16, "bb" * 16, "cc" * 16, "dd" * 16
+            self._slot(root, "zork1", a, age_h=2)            # today
+            self._slot(root, "zork1", b, age_h=24)           # this week, not today (Mon 12:00)
+            self._slot(root, "zork1", dd, age_h=40 * 24)     # all-time only (July)
+            self._slot(root, "planetfall", a, age_h=72)      # this month, not this week (Sat)
+            self._slot(root, "planetfall", c, age_h=10 * 24)  # this month
+            st = player_stats(root, now=self.NOW)
+            self.assertEqual(st.per_game, {"zork1": (1, 2, 2),
+                                           "planetfall": (0, 0, 2)})
+            self.assertEqual(st.total, 4)  # a dedupes across games
 
     def test_empty_or_missing_dir(self):
         with tempfile.TemporaryDirectory() as d:
-            st = player_stats(Path(d) / "nope")
-            self.assertEqual((st.per_game, st.total, st.recent), ({}, 0, 0))
+            st = player_stats(Path(d) / "nope", now=self.NOW)
+            self.assertEqual((st.per_game, st.total), ({}, 0))
 
     def test_render_page_stats(self):
         page = render_page("J", [("zork1", 3, "<ab:cd:ef>")],
-                           PlayerStats({"zork1": 4}, 4, 3))
-        self.assertIn("4 people have played · 3 in the last 24 h", page)
-        self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n  4 players", page)
+                           PlayerStats({"zork1": (1, 2, 3)}, 12))
+        self.assertIn("12 players all time", page)
+        self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n"
+                      "  1 today · 2 this week · 3 this month", page)
 
 
 class Helpers(unittest.TestCase):
@@ -240,11 +246,14 @@ class Helpers(unittest.TestCase):
         page = render_page("J-Machine Games",
                            [("zork1", 3, "<ab:cd:ef>"),
                             ("planetfall", 5, "<90:12:34>")],
-                           PlayerStats({"zork1": 2, "planetfall": 1}, 2, 2))
+                           PlayerStats({"zork1": (1, 2, 2),
+                                        "planetfall": (0, 0, 1)}, 2))
         self.assertTrue(page.startswith(">J-Machine Games\n>"))
-        self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n  2 players", page)
-        self.assertIn("> planetfall (v5)\n  <90:12:34>\n  1 player", page)
-        self.assertIn("2 people have played · 2 in the last 24 h", page)
+        self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n"
+                      "  1 today · 2 this week · 2 this month", page)
+        self.assertIn("> planetfall (v5)\n  <90:12:34>\n"
+                      "  0 today · 0 this week · 1 this month", page)
+        self.assertIn("2 players all time", page)
 
     def test_write_rns_config(self):
         with tempfile.TemporaryDirectory() as d:

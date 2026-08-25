@@ -11,6 +11,7 @@ the only case where the transcript restarts (restored batch = prompt +
 status line; the phone's message history keeps the rest, spec §5).
 """
 import dataclasses
+import datetime
 import os
 import sys
 import time
@@ -198,57 +199,58 @@ def _autosave(store, game, sender, s):
 def render_page(name, games, stats):
     """Micron page text (spec §6). games = [(stem, version, addr_str)];
     addr_str = pretty hexrep of the game's lxmf.delivery destination hash.
-    stats = player_stats(...) — the page shows who plays: per-game player
-    count, total unique people, recently active (spec §6). The stats lines
-    are plain 2-space-indented text that parse_page's regexes ignore
-    (verified by the network suite's live browse+parse)."""
+    stats = player_stats(...) — per-game today/week/month + the all-time
+    player bar (spec §6). The stats lines are plain indented text that
+    parse_page's regexes ignore (verified by the network suite's live
+    browse+parse)."""
     def plural(n, one, many):
         return one if n == 1 else many
     lines = [f">{name}", ">",
              "One-line Z-machine games over Reticulum.",
              "Send any message to a game's address to play;",
              "progress is saved per player automatically.",
-             f"{stats.total} {plural(stats.total, 'person', 'people')} "
-             f"{'has' if stats.total == 1 else 'have'} played · "
-             f"{stats.recent} in the last 24 h",
+             f"{stats.total} {plural(stats.total, 'player', 'players')} "
+             f"all time",
              ">", ">Games"]
     for stem, version, addr in games:
         lines.append(f"> {stem} (v{version})")
         lines.append(f"  {addr}")
-        n = stats.per_game.get(stem, 0)
-        lines.append(f"  {n} {plural(n, 'player', 'players')}")
+        t, w, m = stats.per_game.get(stem, (0, 0, 0))
+        lines.append(f"  {t} today · {w} this week · {m} this month")
     return "\n".join(lines) + "\n"
-
-
-RECENT_WINDOW = 24 * 3600  # spec §6 page: "in the last 24 h"
 
 
 @dataclasses.dataclass
 class PlayerStats:
-    per_game: dict  # {game: unique player count}
-    total: int      # unique players across all games (one person, N games = 1)
-    recent: int     # unique players active within RECENT_WINDOW
+    per_game: dict  # {game: (today, this week, this month)}
+    total: int      # all-time unique players, all games (one identity, N games = 1)
 
 
 def player_stats(saves_root, now=None):
     """Player metrics from the autosave slot files (spec §6 page). The
     slots ARE the registry: one file per (game, player), rewritten every
-    turn, never deleted (spec §5) — file count = players ever, mtime =
-    last turn. A player's recency uses their newest slot across games
-    (played two games a day apart = one recent person). A missing dir is
-    the fresh-host state: all zeros. now injectable so tests need no
-    utime for the window itself."""
+    turn, never deleted (spec §5) — mtime = last turn. per_game[game] =
+    (today, this week, this month): players with a slot mtime since
+    midnight / this Monday / this 1st, host's local clock. total =
+    all-time unique players across all games (one identity, N games = 1).
+    A missing dir is the fresh-host state: zeros. now injectable so
+    tests need no utime for the windows themselves."""
     now = time.time() if now is None else now
-    per_game = {}
-    newest = {}
+    d = datetime.datetime.fromtimestamp(now)
+    midnight = d.replace(hour=0, minute=0, second=0, microsecond=0)
+    starts = (midnight,
+              midnight - datetime.timedelta(days=d.weekday()),
+              midnight.replace(day=1))
+    per_game, identities = {}, set()
     for p in sorted(Path(saves_root).glob("*/*.zmsv")):
-        per_game[p.parent.name] = per_game.get(p.parent.name, 0) + 1
         mt = p.stat().st_mtime
-        if mt > newest.get(p.stem, 0):
-            newest[p.stem] = mt
-    return PlayerStats(per_game, len(newest),
-                       sum(1 for mt in newest.values()
-                           if mt >= now - RECENT_WINDOW))
+        identities.add(p.stem)
+        t, w, m = per_game.get(p.parent.name, (0, 0, 0))
+        if mt >= starts[0].timestamp(): t += 1
+        if mt >= starts[1].timestamp(): w += 1
+        if mt >= starts[2].timestamp(): m += 1
+        per_game[p.parent.name] = (t, w, m)
+    return PlayerStats(per_game, len(identities))
 
 
 def write_rns_config(config_dir, role, port=4242, instance_name=None,
