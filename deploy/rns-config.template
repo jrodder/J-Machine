@@ -1,0 +1,41 @@
+# J-Machine RNS config (deploy template). Copied to data/rns/config by
+# scripts/install.sh on first install (non-clobbering — an existing config
+# is kept). Transport lives here only: no IP/port/interface is hardcoded in
+# jhost/jclient (spec §6). Edit the hubs below and `systemctl restart jhost`
+# to apply. Public testnet endpoints move; they are operator-supplied.
+
+[reticulum]
+enable_transport = yes
+share_instance = yes
+instance_name = jmachine-host
+
+[logging]
+loglevel = 6
+
+[interfaces]
+
+    [[LAN TCP Server]]
+    type = TCPServerInterface
+    enabled = yes
+    listen_ip = 0.0.0.0
+    listen_port = 4242
+
+    [[Testnet Hub: Sydney]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = sydney.reticulum.au
+    target_port = 4242
+
+    [[Testnet Hub: Istanbul]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = istanbul.reserve.network
+    target_port = 9034
+
+    [[Testnet Hub: Beleth]]
+    type = TCPClientInterface
+    # disabled — unreachable from the reference deployment; enable if
+    # reachable from your VPS (host:port kept for parity).
+    enabled = no
+    target_host = rns.beleth.net
+    target_port = 4242
