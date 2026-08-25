@@ -91,8 +91,9 @@ python3 -m venv .venv && .venv/bin/pip install "rns>=1.5,<1.6" "lxmf>=1.1,<1.2"
 echo "look" | .venv/bin/python -m jclient play <game-address> --data-dir ~/.jclient --identity ~/.jclient/identity
 ```
 
-The client identity file IS the player's save slot; the host autosaves
-after every turn to `data/saves/<game>/<player-hash>.zmsv`. A player who
+The client identity file IS the player's save slot; the host autosaves after
+every turn (held while an in-game `save` image is pending, rewritten by the
+`restore` turn's autosave) to `data/saves/<game>/<player-hash>.zmsv`. A player who
 disappears for days reconnects to exactly where they left off.
 In-game `save`/`restore` verbs map to that slot with no prompt.
 

@@ -280,7 +280,9 @@ Notes:
 ## 5. State and saves
 
 - **On disk:** `data/saves/<game>/<player_hexhash>.zmsv` — ZMSAVE v1 images
-  (~65 KB), one per player per game. Written after every turn and on done; atomic
+  (~65 KB), one per player per game. Written after every turn and on done (the
+  per-turn autosave is held while an in-game `@save` image is pending; the
+  `@restore` turn's autosave rewrites the slot — spec §7 test 5 lifecycle); atomic
   (temp file + `os.replace`). Never deleted, never expires — the player who
   vanishes for weeks is the *normal* case (spec §12). 10 players × 5 games ≈ 3 MB.
 - **Save/restore integrity:** the image embeds the story file's sha256 (Phase 1).

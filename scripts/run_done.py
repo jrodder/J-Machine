@@ -2,7 +2,7 @@
 """Done-bar runner (plan Task 14, spec section 11).
 
 Runs each gate in order, prints a checklist, exits non-zero on any failure.
-Gate 5 (manual smoke) is a reminder, not an automated check.
+Gate 6 (manual smoke) is a reminder, not an automated check.
 """
 import subprocess
 import sys

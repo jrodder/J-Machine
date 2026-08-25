@@ -31,7 +31,7 @@ class Client:
         RNS.Reticulum(str(cfg_dir))
         # The config loglevel=-1 is clamped to 0 (LOG_CRITICAL) at parse
         # time (site-packages/RNS/Reticulum.py:468) and LOG_NONE is not
-        # reachable via the 1.5.0 constructor either (Reticulum.py:315) —
+        # reachable via the 1.5.0 constructor either (Reticulum.py:314) —
         # the runtime override is required. The client's stdout is a data
         # contract (spec §7: norm(stdout) == session transcript); one log
         # line would pollute it.
