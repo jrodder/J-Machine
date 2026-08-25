@@ -61,6 +61,12 @@ class FileSaveStore(SaveStore):
 class GameState:
     session: Session
     transcript: str  # cumulative Text since this session's load/restore
+    # an in-game @save wrote the slot this session: the per-turn autosave
+    # holds until @restore consumes it (spec §5 test 5 slot lifecycle: the
+    # slot is written by the in-game save and rewritten by the autosave
+    # after the restore turn) — an autosave in between would clobber the
+    # mid-turn image the story's @restore is meant to reload
+    save_pending: bool = False
 
 
 def _render(events):
@@ -109,7 +115,8 @@ def handle_message(game, sender, text, verified, sessions, store,
     if len(text) > INPUT_CAP:
         return "[Input rejected: line too long (>200)]"
     st.transcript += _render(st.session.input(text))
-    _autosave(store, game, sender, st.session)
+    if not st.save_pending:
+        _autosave(store, game, sender, st.session)
     return st.transcript
 
 
@@ -118,7 +125,8 @@ def _new_game(game, sender, story_path, store, seed):
     save exists (intro discarded). Corrupt/mismatched save -> log + fresh
     start (spec §4/§5)."""
     s = Session()
-    _install_handlers(s, store, game, sender)
+    st = GameState(s, "")
+    _install_handlers(s, st, store, game, sender)
     batch = s.load(str(story_path), seed=seed)
     img = store.load(game, sender)
     if img is not None:
@@ -127,15 +135,21 @@ def _new_game(game, sender, story_path, store, seed):
         except SaveFileError as e:
             print(f"jhost: {game}/{sender[:8]}: save restore failed ({e}); "
                   f"fresh start", file=sys.stderr)
-    return GameState(s, _render(batch))
+    st.transcript = _render(batch)
+    return st
 
 
-def _install_handlers(s, store, game, sender):
+def _install_handlers(s, st, store, game, sender):
     """In-game @save/@restore -> host-local slot, no prompt (spec §5).
-    The opcode's filename hint is ignored: the slot IS the identity."""
+    The opcode's filename hint is ignored: the slot IS the identity.
+    @save writes the mid-turn image the story's @restore reloads (engine/
+    dfrotz semantics: the restore replays the save routine's tail, "Ok.")
+    — so the autosave holds while one is pending; the restore turn's
+    autosave rewrites the slot."""
     def _save(_hint):
         try:
             store.save(game, sender, s.save())
+            st.save_pending = True
             return True
         except OSError:
             return False
@@ -146,6 +160,7 @@ def _install_handlers(s, store, game, sender):
             return False
         try:
             s.restore_image(img)
+            st.save_pending = False
             return True
         except SaveFileError:
             return False
@@ -155,7 +170,8 @@ def _install_handlers(s, store, game, sender):
 
 
 def _autosave(store, game, sender, s):
-    """After every fed turn. A failed write never fails the turn
+    """After every fed turn (except while an in-game @save is pending —
+    see GameState.save_pending). A failed write never fails the turn
     (spec §4): log, retry next turn."""
     try:
         store.save(game, sender, s.save())

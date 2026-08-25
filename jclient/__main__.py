@@ -70,18 +70,24 @@ def cmd_play(a):
     c = Client(a.data_dir, a.identity, name="jclient", port=a.port)
     addr = unpretty(a.game_address)
     prev = ""
+    seen = set()
     for line in sys.stdin:
         line = line.rstrip("\n")
         c.send(addr, line.encode(), "play")
-        # `prev` is the only reply string seen so far: each new reply is a
-        # strict extension of it (cumulative transcript), so it can never
-        # equal it. A rejection ("[Rejected…]", "[Game over]") doesn't
-        # start with prev and is a new string. No other message source
-        # exists on this delivery identity.
-        reply = c.wait_reply({prev} if prev else set(), timeout=120)
+        # `seen` = every reply string seen so far (wait_reply's contract):
+        # the delivery queue keeps OLD replies (cumulative transcript), so
+        # a single prev string can't identify the new one — the scan would
+        # return a stale older reply instead. A rejection ("[Rejected…]",
+        # "[Game over]") is never in seen and is a new string. No other
+        # message source exists on this delivery identity.
+        reply = c.wait_reply(seen, timeout=120)
+        seen.add(reply)
         # every reply is a cumulative transcript: print the increment
+        # verbatim (no added newline — a turn ends at the prompt, mid
+        # line; the client's stdout is the session transcript itself,
+        # spec §7 data contract)
         new = reply[len(prev):] if reply.startswith(prev) else reply
-        sys.stdout.write(new + "\n")
+        sys.stdout.write(new)
         sys.stdout.flush()
         prev = reply
     return 0
