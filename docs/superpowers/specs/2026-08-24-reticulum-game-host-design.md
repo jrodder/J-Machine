@@ -352,13 +352,29 @@ disk files — the host already knows its games and addresses):
 One-line Z-machine games over Reticulum.
 Send any message to a game's address to play;
 progress is saved per player automatically.
+4 people have played · 3 in the last 24 h
 >
 >Games
 > Zork I (v5)
   <ab:cd:12:...:ef>        # prettyhexrep of the game's lxmf.delivery hash
+  4 players
 > Planetfall (v5)
   <90:12:...:34>
+  1 player
 ```
+
+**Player stats on the page (2026-08-25):** the counts answer "how many
+people have played / are still around" — per-game players, total unique
+people (one identity playing two games counts once), and recently active
+(mtime within 24 h). They are derived from the autosave slot files (spec
+§5) — one slot per (game, player), rewritten every turn, never deleted —
+so file count = players ever and mtime = last turn; no separate counters
+exist and nothing new to maintain. "Playing right now" is deliberately not
+reported: the protocol is stateless fire-and-forget with no session
+start/stop, so an exact online count would be a guess. A host with no
+players yet renders "0 people have played". The stats lines are plain
+2-space-indented text; `parse_page`'s regexes ignore them (the network
+suite's live browse+parse is the regression gate).
 
 Addresses are printed as plain `prettyhexrep` hashes (RNS's own `<ab:cd:...>` form)
 — trivially parseable by a regex and rendered by every browser; `rns:`-link markup

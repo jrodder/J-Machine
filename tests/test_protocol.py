@@ -1,11 +1,14 @@
 """Spec §7 tests 6-7: protocol edge-behavior table + save sanity.
 No RNS import — milliseconds each."""
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from jhost.protocol import (FileSaveStore, INPUT_CAP, handle_message,
-                            render_page, write_rns_config)
+from jhost.protocol import (FileSaveStore, INPUT_CAP, PlayerStats,
+                            handle_message, player_stats, render_page,
+                            write_rns_config)
 from tests.conformance.run_conformance import play_session_lines
 from tests.util import norm
 from zmach.events import Text
@@ -184,6 +187,46 @@ class Protocol(unittest.TestCase):
         p.close()
 
 
+class PlayerStatsTests(unittest.TestCase):
+    """spec §6 page stats: the autosave slot files ARE the player registry
+    (one per (game, player), rewritten every turn, never deleted — spec §5),
+    so count = players ever, mtime = last turn."""
+
+    def _slot(self, root, game, sender, age=0.0):
+        p = root / game / f"{sender}.zmsv"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"img")
+        if age:
+            t = time.time() - age
+            os.utime(p, (t, t))
+        return p
+
+    def test_counts_dedup_and_window(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            now = time.time()
+            a, b, c = "aa" * 16, "bb" * 16, "cc" * 16
+            self._slot(root, "zork1", a)          # fresh
+            self._slot(root, "zork1", b)          # fresh
+            self._slot(root, "planetfall", a)     # same person, second game
+            self._slot(root, "planetfall", c, age=2 * 24 * 3600)  # stale
+            st = player_stats(root, now=now)
+            self.assertEqual(st.per_game, {"zork1": 2, "planetfall": 2})
+            self.assertEqual(st.total, 3)   # a dedupes across games
+            self.assertEqual(st.recent, 2)  # c outside the 24 h window
+
+    def test_empty_or_missing_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = player_stats(Path(d) / "nope")
+            self.assertEqual((st.per_game, st.total, st.recent), ({}, 0, 0))
+
+    def test_render_page_stats(self):
+        page = render_page("J", [("zork1", 3, "<ab:cd:ef>")],
+                           PlayerStats({"zork1": 4}, 4, 3))
+        self.assertIn("4 people have played · 3 in the last 24 h", page)
+        self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n  4 players", page)
+
+
 class Helpers(unittest.TestCase):
     def test_file_save_store_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:
@@ -196,10 +239,12 @@ class Helpers(unittest.TestCase):
     def test_render_page(self):
         page = render_page("J-Machine Games",
                            [("zork1", 3, "<ab:cd:ef>"),
-                            ("planetfall", 5, "<90:12:34>")])
+                            ("planetfall", 5, "<90:12:34>")],
+                           PlayerStats({"zork1": 2, "planetfall": 1}, 2, 2))
         self.assertTrue(page.startswith(">J-Machine Games\n>"))
-        self.assertIn("> zork1 (v3)\n  <ab:cd:ef>", page)
-        self.assertIn("> planetfall (v5)\n  <90:12:34>", page)
+        self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n  2 players", page)
+        self.assertIn("> planetfall (v5)\n  <90:12:34>\n  1 player", page)
+        self.assertIn("2 people have played · 2 in the last 24 h", page)
 
     def test_write_rns_config(self):
         with tempfile.TemporaryDirectory() as d:

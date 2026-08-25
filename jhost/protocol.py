@@ -13,6 +13,7 @@ status line; the phone's message history keeps the rest, spec §5).
 import dataclasses
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -194,18 +195,60 @@ def _autosave(store, game, sender, s):
               file=sys.stderr)
 
 
-def render_page(name, games):
+def render_page(name, games, stats):
     """Micron page text (spec §6). games = [(stem, version, addr_str)];
-    addr_str = pretty hexrep of the game's lxmf.delivery destination hash."""
+    addr_str = pretty hexrep of the game's lxmf.delivery destination hash.
+    stats = player_stats(...) — the page shows who plays: per-game player
+    count, total unique people, recently active (spec §6). The stats lines
+    are plain 2-space-indented text that parse_page's regexes ignore
+    (verified by the network suite's live browse+parse)."""
+    def plural(n, one, many):
+        return one if n == 1 else many
     lines = [f">{name}", ">",
              "One-line Z-machine games over Reticulum.",
              "Send any message to a game's address to play;",
              "progress is saved per player automatically.",
+             f"{stats.total} {plural(stats.total, 'person', 'people')} "
+             f"{'has' if stats.total == 1 else 'have'} played · "
+             f"{stats.recent} in the last 24 h",
              ">", ">Games"]
     for stem, version, addr in games:
         lines.append(f"> {stem} (v{version})")
         lines.append(f"  {addr}")
+        n = stats.per_game.get(stem, 0)
+        lines.append(f"  {n} {plural(n, 'player', 'players')}")
     return "\n".join(lines) + "\n"
+
+
+RECENT_WINDOW = 24 * 3600  # spec §6 page: "in the last 24 h"
+
+
+@dataclasses.dataclass
+class PlayerStats:
+    per_game: dict  # {game: unique player count}
+    total: int      # unique players across all games (one person, N games = 1)
+    recent: int     # unique players active within RECENT_WINDOW
+
+
+def player_stats(saves_root, now=None):
+    """Player metrics from the autosave slot files (spec §6 page). The
+    slots ARE the registry: one file per (game, player), rewritten every
+    turn, never deleted (spec §5) — file count = players ever, mtime =
+    last turn. A player's recency uses their newest slot across games
+    (played two games a day apart = one recent person). A missing dir is
+    the fresh-host state: all zeros. now injectable so tests need no
+    utime for the window itself."""
+    now = time.time() if now is None else now
+    per_game = {}
+    newest = {}
+    for p in sorted(Path(saves_root).glob("*/*.zmsv")):
+        per_game[p.parent.name] = per_game.get(p.parent.name, 0) + 1
+        mt = p.stat().st_mtime
+        if mt > newest.get(p.stem, 0):
+            newest[p.stem] = mt
+    return PlayerStats(per_game, len(newest),
+                       sum(1 for mt in newest.values()
+                           if mt >= now - RECENT_WINDOW))
 
 
 def write_rns_config(config_dir, role, port=4242, instance_name=None,

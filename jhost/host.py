@@ -15,7 +15,7 @@ import RNS
 from LXMF import LXMessage, LXMRouter
 
 from .protocol import (DEST_JSON, FileSaveStore, handle_message,
-                       render_page, write_rns_config)
+                       player_stats, render_page, write_rns_config)
 
 ANNOUNCE_INTERVAL = 300  # seconds (spec §3)
 
@@ -114,7 +114,10 @@ class Host:
         # (Link.handle_request inspects the signature — verified 1.5.0)
         games = [(stem, self.versions[stem], RNS.prettyhexrep(d.hash))
                  for stem, d in sorted(self.destinations.items())]
-        return render_page(self.name, games).encode()
+        # page is rendered per request (spec §6): stats computed fresh from
+        # the slot files — a handful of file stats, no cache to invalidate
+        stats = player_stats(self.store.root)
+        return render_page(self.name, games, stats).encode()
 
     def _on_message(self, stem, msg):
         sender = msg.source_hash.hex()
