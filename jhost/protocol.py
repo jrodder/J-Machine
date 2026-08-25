@@ -1,9 +1,14 @@
 """Pure host protocol (spec §4) — no RNS/LXMF imports; unit-testable with
-fakes. Reply semantics: every reply is the cumulative transcript of that
-host-side session (intro/restored batch + every turn since), so a reply is
-self-contained and the player's phone needs no client-side state. A host
-restart is the only case where the transcript restarts (restored batch =
-prompt + status line; the phone's message history keeps the rest, spec §5).
+fakes. Reply semantics (2026-08-25): the first-contact reply is the load/
+restore batch (+ that line's turn if the first message carried one) — all
+new data. Every reply after that carries ONLY the new turn's text (Error
+events inline as '[error] ...'); the chat scrollback is the transcript — the
+phone client (Sideband) renders each LXMF message as a bubble, so re-sending
+the accumulated text every turn would be O(n^2). The one exception: an empty
+message is a deliberate state re-fetch and returns the full cumulative
+transcript (recovery if the client's history was lost). A host restart is
+the only case where the transcript restarts (restored batch = prompt +
+status line; the phone's message history keeps the rest, spec §5).
 """
 import dataclasses
 import os
@@ -87,6 +92,11 @@ def handle_message(game, sender, text, verified, sessions, store,
     failures: rejection/done/corrupt-save/unavailable-story are replies
     (spec §4).
 
+    First contact -> the load/restore batch (+ the line's turn if one was
+    attached). Existing session, non-empty line -> ONLY the new turn's
+    rendered text (per-turn delta, spec §4). Empty message -> the full
+    cumulative transcript (state re-fetch).
+
     game      story stem (e.g. "zork1")
     sender    32-hex-char lxmf.delivery destination hash of the sender
     text      message.content_as_string() (None -> "")
@@ -101,6 +111,7 @@ def handle_message(game, sender, text, verified, sessions, store,
         text = ""
     key = (game, sender)
     st = sessions.get(key)
+    first = st is None
     if st is None:
         try:
             sessions[key] = st = _new_game(game, sender, story_path, store, seed)
@@ -114,10 +125,13 @@ def handle_message(game, sender, text, verified, sessions, store,
         return st.transcript
     if len(text) > INPUT_CAP:
         return "[Input rejected: line too long (>200)]"
-    st.transcript += _render(st.session.input(text))
+    delta = _render(st.session.input(text))
+    st.transcript += delta  # kept for the empty-message state re-fetch
     if not st.save_pending:
         _autosave(store, game, sender, st.session)
-    return st.transcript
+    # first contact: the batch + this turn are all new -> send both.
+    # afterwards: the delta only (the scrollback keeps the rest).
+    return st.transcript if first else delta
 
 
 def _new_game(game, sender, story_path, store, seed):

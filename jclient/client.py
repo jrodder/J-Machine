@@ -99,14 +99,19 @@ class Client:
                       content=content, title=title)
         self.router.handle_outbound(m)
 
-    def wait_reply(self, known, timeout=90):
-        """Block until a reply arrives that isn't in `known` (set of the
-        transcript strings seen so far). Returns the new reply string."""
+    def wait_reply(self, after_index, timeout=90):
+        """Block until more than `after_index` replies have arrived; return
+        the reply at that index (0-based arrival position).
+
+        By arrival count, not content: LXMF/RNS dedupe retransmissions at
+        the delivery layer (spec §2), so each send adds exactly one reply.
+        Content-based filtering would swallow legitimate replies: under the
+        per-turn delta contract (spec §4) two turns can emit identical text
+        (e.g. "Taken." twice), which a seen-set would treat as a duplicate."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            for r in list(self._replies):
-                if r not in known:
-                    return r
+            if len(self._replies) > after_index:
+                return self._replies[after_index]
             time.sleep(2)
         raise TimeoutError("no reply")
 

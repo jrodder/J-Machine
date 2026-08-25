@@ -197,8 +197,9 @@ class Network(unittest.TestCase):
         the restore turn. Two client phases (same identity): phase 1
         '' (transcript-only) + 'more' (absorbs seed-10's ***MORE*** intro
         pause — the protocol never feeds empty lines) + save + look; phase
-        2 restore + look. Phase 2's client is fresh, so its reply is the
-        FULL cumulative transcript -> out2 contains BOTH "Ok."s."""
+        2 restore + look. Replies are per-turn deltas (spec §4), so each
+        phase's output is that phase's turns only — out2 contains its own
+        single "Ok." and out1+out2 is the full two-phase transcript."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             with host(["risorg.z8"], 4345, d) as dests:
@@ -221,13 +222,14 @@ class Network(unittest.TestCase):
                                              port=4345)
                 self.assertEqual(rc2, 0,
                                  out2 + "\n" + netrig.logs_tail(work))
-                # cumulative reply: phase 1's save "Ok." + phase 2's restore "Ok."
-                self.assertEqual(out2.count("Ok."), 2)
+                # delta reply: phase 2 shows only its own restore "Ok."
+                self.assertEqual(out2.count("Ok."), 1)
                 st2 = slot.stat()
                 self.assertGreater(st2.st_mtime_ns, st1.st_mtime_ns,
                                    "slot file must be rewritten by the "
                                    "post-restore autosave")
-                # the full two-phase wire transcript (cumulative replies)
+                # the two phases' delta outputs joined are the full
+                # two-phase wire transcript
                 # must equal the Session-level reference with identical
                 # handler semantics (in-memory slot, as the host's is a file)
                 def handlers(s):
@@ -247,7 +249,7 @@ class Network(unittest.TestCase):
                                          ["", "save", "look", "restore",
                                           "look"],
                                          seed=SEED, handlers=handlers)
-                self.assertEqual(norm(out2), norm(ref))
+                self.assertEqual(norm(out1 + out2), norm(ref))
 
 
 if __name__ == "__main__":

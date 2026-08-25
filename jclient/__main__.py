@@ -2,8 +2,9 @@
 
 play mirrors Sideband's wire path: own delivery identity (persisted at
 --identity — the player's save-slot file), one message per game line,
-print the new part of each reply. ^D (EOF) exits; the host's per-turn
-autosave already persisted the state."""
+print each reply verbatim. Replies are per-turn deltas (spec §4), so the
+client's stdout is the session transcript. ^D (EOF) exits; the host's
+per-turn autosave already persisted the state."""
 import argparse
 import json
 import sys
@@ -69,27 +70,23 @@ def cmd_browse(a):
 def cmd_play(a):
     c = Client(a.data_dir, a.identity, name="jclient", port=a.port)
     addr = unpretty(a.game_address)
-    prev = ""
-    seen = set()
-    for line in sys.stdin:
+    # # ponytail: the arrival count assumes a clean delivery queue at process
+    # start (the test client sends and waits synchronously); a stale queued
+    # reply from a crashed session would shift the count by one — drain the
+    # queue at startup if that ever bites in practice.
+    for i, line in enumerate(sys.stdin):
         line = line.rstrip("\n")
         c.send(addr, line.encode(), "play")
-        # `seen` = every reply string seen so far (wait_reply's contract):
-        # the delivery queue keeps OLD replies (cumulative transcript), so
-        # a single prev string can't identify the new one — the scan would
-        # return a stale older reply instead. A rejection ("[Rejected…]",
-        # "[Game over]") is never in seen and is a new string. No other
-        # message source exists on this delivery identity.
-        reply = c.wait_reply(seen, timeout=120)
-        seen.add(reply)
-        # every reply is a cumulative transcript: print the increment
-        # verbatim (no added newline — a turn ends at the prompt, mid
-        # line; the client's stdout is the session transcript itself,
-        # spec §7 data contract)
-        new = reply[len(prev):] if reply.startswith(prev) else reply
-        sys.stdout.write(new)
+        # replies are per-turn deltas (spec §4): print verbatim. wait_reply
+        # is by arrival index, not content — identical deltas (two "Taken."
+        # turns) are distinct messages, and retransmission dedup is the
+        # transport's job (spec §2).
+        reply = c.wait_reply(i, timeout=120)
+        # no added newline — a turn ends at the prompt, mid line; the
+        # client's stdout is the session transcript itself, spec §7 data
+        # contract
+        sys.stdout.write(reply)
         sys.stdout.flush()
-        prev = reply
     return 0
 
 
@@ -108,7 +105,7 @@ def cmd_smoke(a):
     # assert the reply was *accepted* (responder replies "SMOKE-REPLY:<…>"
     # only when the sender signature validates)
     c.send(unpretty(dests["games"]["smoke"]), b"hello", "smoke")
-    reply = c.wait_reply(set())
+    reply = c.wait_reply(0)
     print(reply, end="")
     if not reply.startswith("SMOKE-REPLY"):
         print(f"\nunexpected smoke reply: {reply!r}", file=sys.stderr)

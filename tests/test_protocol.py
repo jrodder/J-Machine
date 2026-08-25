@@ -102,13 +102,29 @@ class Protocol(unittest.TestCase):
     def test_existing_session_empty_line(self):
         self.assertEqual(self.p.call(text=""), self.p.call(text=""))
 
+    def test_replies_are_per_turn_deltas(self):
+        # Spec §4 (2026-08-25): a reply after first contact carries ONLY
+        # the new turn's text — the phone's chat scrollback is the
+        # transcript (Sideband renders each LXMF message as a bubble, so a
+        # cumulative re-send is O(n^2) text). Regression: turn N+1's reply
+        # must not re-send turn N's text.
+        r0 = self.p.call(text="")  # first contact: full intro batch
+        self.assertIn("open field", norm(r0))
+        r1 = self.p.call(text="look")
+        self.assertIn("open field", norm(r1))  # the west-of-house turn
+        r2 = self.p.call(text="north")
+        self.assertIn("North of House", norm(r2))
+        self.assertNotIn("open field", norm(r2),
+                         "turn 2's reply must not re-send turn 1's text")
+
     def test_input_cap(self):
         r = self.p.call(text="x" * (INPUT_CAP + 1))
         self.assertEqual(r, "[Input rejected: line too long (>200)]")
-        # session intact: the next valid line plays
-        r2 = self.p.call(text="look")
-        self.assertEqual(norm(r2),
-                         norm(play_session_lines(ZORK, ["look"], seed=SEED)))
+        # session intact: the next valid line plays (delta reply)
+        s = Session()
+        s.load(str(ZORK), seed=SEED)
+        ref = text_of(s.input("look"))
+        self.assertEqual(norm(self.p.call(text="look")), norm(ref))
 
     def test_done_session(self):
         p = P(story=PF)
@@ -141,10 +157,15 @@ class Protocol(unittest.TestCase):
         s = Session()
         s.load(str(RISORG), seed=SEED)
         s.restore(img)
-        # and the look after restore shows the save-point room
-        room = norm(play_session_lines(RISORG, ["", "look"], seed=SEED))
-        intro = norm(play_session_lines(RISORG, [""], seed=SEED))
-        self.assertIn(room[len(intro):], norm(p.call(text="look")))
+        # and the look after restore shows the save-point room — the delta
+        # reply is the turn's own text (no preceding prompt), so reference
+        # it at Session level: load + "" (absorbed at the ***MORE*** pause,
+        # as the wire's "more" line) + look
+        s = Session()
+        s.load(str(RISORG), seed=SEED)
+        s.input("")
+        ref_look = text_of(s.input("look"))
+        self.assertEqual(norm(p.call(text="look")), norm(ref_look))
         p.close()
 
     def test_autosave_roundtrip(self):
@@ -158,8 +179,8 @@ class Protocol(unittest.TestCase):
         s.restore(img)
         ref = text_of(s.input("south"))
         r3 = p.call(text="south")
-        # reply is cumulative -> the last turn's text is the suffix
-        self.assertEqual(norm(r3[len(r2):]), norm(ref))
+        # reply is the turn's delta -> r3 IS the new turn's text
+        self.assertEqual(norm(r3), norm(ref))
         p.close()
 
 

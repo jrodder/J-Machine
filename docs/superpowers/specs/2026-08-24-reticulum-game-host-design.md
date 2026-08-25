@@ -244,20 +244,33 @@ on lxmf message M (game G, sender S = M.source_hash):
           → return
 
   if text == "":
-      → reply = transcript so far (intro or restored prompt)
+      → reply = full transcript so far (the state re-fetch — the only message
+        that carries accumulated text)
   else:
       validate: len(text) <= 200                    # input cap (player lines are short)
         fail → reply "[Input rejected: line too long (>200)]", session untouched
       feed text; run to boundary
       autosave (atomic write) — a failed write never fails the turn (log, retry next turn)
-      → reply = transcript so far (intro/restored batch on first contact) + the turn's
-        Text data (Error events rendered inline as "[error] ...")
+      → reply = ONLY the turn's Text data (Error events rendered inline as
+        "[error] ...") — except on first contact, where the intro/restored batch
+        (all-new data) precedes the turn
       (the turn's autosave above already persists the done state — no extra write)
 reply = LXMessage(recall(S) delivery dest, content=reply_text, title=game_name)
 ```
 
 Notes:
 
+- **Replies are per-turn deltas (2026-08-25 change).** The phone client
+  (Sideband) renders each LXMF message as a chat bubble; re-sending the
+  accumulated transcript every turn would make the chat O(n²) text. So after
+  first contact the reply carries only the new turn's text — the chat
+  scrollback IS the transcript, and the phone does the accumulating. First
+  contact still sends the full batch (all-new data), and an empty message
+  still returns the full transcript: that deliberate re-fetch is the recovery
+  path if the client's message history was ever lost (reinstall, wiped
+  conversation). A host restart is the one transcript reset (restored batch
+  is empty for a boundary save — §5), which is safe for the same reason: the
+  phone's scrollback already has everything before the boundary.
 - **Output is uncapped.** Turn text of any size rides the link directly; beyond the
   link MDU RNS auto-chunks it as a Resource (verified §2). A 40-line room description
   is one packet over TCP, many chunks over LoRa — same client code.
