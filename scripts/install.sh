@@ -68,7 +68,7 @@ Wants=network-online.target
 Type=simple
 User=$RUN_USER
 WorkingDirectory=$REPO_ROOT
-ExecStart=$VENV/bin/python -m jhost games/ --data-dir data/
+ExecStart=$VENV/bin/python -u -m jhost games/ --data-dir data/
 Restart=on-failure
 RestartSec=5
 
