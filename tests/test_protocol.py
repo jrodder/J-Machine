@@ -265,16 +265,26 @@ class Helpers(unittest.TestCase):
                             manuals={"zork1": "ab:/file/zork1.pdf"})
         self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n"
                       "  1 today · 2 this week · 2 this month\n"
+                      "  `[play`lxmf@abcdef]\n"
                       "  `[manual`ab:/file/zork1.pdf]", paged)
         self.assertNotIn("`[manual`", paged.split("> planetfall")[1])
-        # the manual line must match neither parse_page pattern (the
-        # real parse_page is exercised over the wire in the network
+        # the play + manual lines must match neither parse_page pattern
+        # (the real parse_page is exercised over the wire in the network
         # suite — jclient is RNS-importing and this file is not)
         import re
         game_lines = re.findall(r"^> (\S+) \(v(\d+)\)\s*$", paged, re.M)
         self.assertEqual(game_lines, [("zork1", "3"), ("planetfall", "5")])
         addrs = re.findall(r"^\s{2}(<[0-9a-fA-F:]+>)\s*$", paged, re.M)
         self.assertEqual(addrs, ["<ab:cd:ef>", "<90:12:34>"])
+        # clickable address is lxmf@<32-hex-hash> (meshchat strips "lxmf@"
+        # and requires exactly 32 chars): a real full-length address must
+        # produce the delimiters-free 32-char form
+        full = render_page("J", [("zork1", 3,
+                                  "<" + "ab:cd:12:34:56:78:9a:bc:de:f0"
+                                  + "11:22:33:44:55:66>")],
+                           PlayerStats({}, 0))
+        self.assertIn("`[play`lxmf@abcd123456789abcdef0112233445566]",
+                      full)
 
     def test_write_rns_config(self):
         with tempfile.TemporaryDirectory() as d:
