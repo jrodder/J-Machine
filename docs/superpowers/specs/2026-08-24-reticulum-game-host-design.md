@@ -185,8 +185,8 @@ jhost  (python3 -m jhost <games-dir> [--data-dir DIR] [--name NAME] [--seed N]
 ├── RNS instance (config: data/rns/config)
 ├── page destination      nomadnetwork.node     identity: data/identities/page
 │     /page/index.mu      micron page: one section per game with its LXMF address
-│     announced every --announce-interval (default 15 min; 2026-08-25 —
-│     was a hardcoded 300 s), app_data = node name (default "J-Machine Games")
+│     announced every --announce-interval (default 60 min; 2026-08-25 was
+│     15 min, was 300 s before that), app_data = node name (default "J-Machine Games")
 └── per game (one per story file in <games-dir>):
       identity            data/identities/<stem>      (persisted → static address)
       LXMRouter           storage: data/lxmf/<stem>
@@ -213,11 +213,16 @@ Global (shared by all games): session map {(game, player_hexhash): Session}
 - **Startup:** missing config dir → scaffold minimal config (internal-test shape,
   loopback server on 127.0.0.1:4242) and print where to add the real transport.
   Missing identities → generate and persist. Announce immediately, then on the
-  re-announce interval — `--announce-interval MIN` (minutes, default 15; 2026-08-25,
-  was hardcoded 300 s; operator knob: a VPS that always has a path needs a
-  slower cadence, a flaky LoRa node a faster one) — both the page destination
+  re-announce interval — `--announce-interval MIN` (minutes, default 60; 2026-08-25,
+  was 15 min, was hardcoded 300 s before that) — both the page destination
   and each game's delivery destination, with the game name as app_data, so the
   host's node list shows "J-Machine Games", "Zork I", "Planetfall".
+  **Cadence is capped by RNS announce rate limiting:** the default announce
+  rate target is 3600 s per destination (Interface.py `DEFAULT_AR_TARGET`); a
+  cadence faster than ~1/hour is treated as a rate violation and, past grace,
+  blocks the destination from rebroadcast for an hour — so faster *hurts*
+  visibility (meshchat stops seeing the node). 60 min is the fastest safe
+  default.
 - **Runtime dependency:** `rns>=1.5,<1.6` (+ `lxmf>=1.1,<1.2`, which requires rns
   1.5.x). Declared in `pyproject.toml`. `zmach/` and its tests never import them.
 

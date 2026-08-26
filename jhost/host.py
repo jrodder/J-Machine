@@ -18,10 +18,15 @@ from .protocol import (DEST_JSON, FileSaveStore, handle_message,
                        player_stats, render_page, write_rns_config)
 
 
-# re-announce cadence default: 15 min (operator ruling 2026-08-25;
-# was 300 s — spec §3). Keeps the page node + game addresses in the
-# NomadNet node list for late joiners (initial ~11 s retransmit window).
-DEFAULT_ANNOUNCE_INTERVAL = 15 * 60
+# Re-announce cadence default: 60 min (spec §3). RNS rate-limits announce
+# rebroadcast to DEFAULT_AR_TARGET = 3600 s per destination
+# (Interfaces/Interface.py:90); announcing more often than ~1/hour is
+# treated as a rate violation and, after grace (5), the destination is
+# blocked from rebroadcast for an hour (Transport.py:2234-2246) — so a
+# faster cadence *reduces* visibility (meshchat stops seeing the node).
+# 3600 s is the fastest safe cadence; startup announce + the ~11 s
+# retransmit window cover initial discovery.
+DEFAULT_ANNOUNCE_INTERVAL = 60 * 60
 
 
 class Host:
@@ -175,7 +180,7 @@ class Host:
 
     def _announce_all(self):
         # the announce itself is silent at loglevel 6 — this line is the
-        # operator's proof the 15-min cycle (and the startup announce)
+        # operator's proof the re-announce cycle (and the startup announce)
         # is actually firing
         print("jhost: announcing page + games", file=sys.stderr)
         self.page_dest.announce(app_data=self.name.encode())

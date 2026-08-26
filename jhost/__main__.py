@@ -12,9 +12,10 @@ def main():
     ap.add_argument("--name", default="🕹️ J-Machine Games 🕹️")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--port", type=int, default=4242)
-    ap.add_argument("--announce-interval", type=int, default=15,
+    ap.add_argument("--announce-interval", type=int, default=60,
                     metavar="MIN",
-                    help="re-announce cadence in minutes (default 15)")
+                    help="re-announce cadence in minutes (default 60; "
+                         "RNS rate-limits announces to ~1/hour)")
     a = ap.parse_args()
     host = Host(a.data_dir, a.games_dir, a.name, a.seed, a.port,
                 announce_interval=a.announce_interval * 60)
