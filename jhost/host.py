@@ -158,6 +158,19 @@ class Host:
         return render_page(self.name, games, stats, manuals=manuals).encode()
 
     def _on_message(self, stem, msg):
+        if not msg.signature_validated and \
+                msg.unverified_reason == LXMessage.SOURCE_UNKNOWN:
+            # source was unknown when LXMF parsed the message (fresh node,
+            # or the sender's delivery announce hasn't propagated — the
+            # ~1/hour announce rate limit). Request the path, which is
+            # answered with the sender's announce, then re-parse so the
+            # signature validates against the now-known identity.
+            RNS.Transport.await_path(msg.source_hash, timeout=15)
+            try:
+                msg = LXMessage.unpack_from_bytes(msg.packed)
+            except Exception as e:
+                print(f"jhost: {stem}: re-parse after path request failed "
+                      f"({e})", file=sys.stderr)
         sender = msg.source_hash.hex()
         text = msg.content_as_string()  # None if not valid UTF-8
         with self.lock:
