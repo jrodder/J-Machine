@@ -167,9 +167,16 @@ class Host:
                                    self.seed)
         src = RNS.Identity.recall(msg.source_hash)
         if src is None:
-            print(f"jhost: {stem}: cannot recall {sender[:8]} for reply",
-                  file=sys.stderr)
-            return
+            # sender not in our known-destinations table yet (fresh node, or
+            # its delivery announce hasn't propagated — the ~1/hour announce
+            # rate limit). Ask the network for its path; a path request is
+            # answered with the sender's announce, which lets us recall it.
+            RNS.Transport.await_path(msg.source_hash, timeout=15)
+            src = RNS.Identity.recall(msg.source_hash)
+            if src is None:
+                print(f"jhost: {stem}: cannot recall {sender[:8]} for reply "
+                      f"(path request failed)", file=sys.stderr)
+                return
         dest = RNS.Destination(src, RNS.Destination.OUT,
                                RNS.Destination.SINGLE, "lxmf", "delivery")
         # reply pattern verified spec §2; LXMessage requires an explicit
