@@ -229,7 +229,7 @@ class PlayerStatsTests(unittest.TestCase):
         page = render_page("J", [("zork1", 3, "<ab:cd:ef>")],
                            PlayerStats({"zork1": (1, 2, 3)}, 12))
         self.assertIn("12 players all time", page)
-        self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n"
+        self.assertIn("> zork1 (v3)\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
                       "  1 today · 2 this week · 3 this month", page)
 
 
@@ -249,9 +249,10 @@ class Helpers(unittest.TestCase):
                            PlayerStats({"zork1": (1, 2, 2),
                                         "planetfall": (0, 0, 1)}, 2))
         self.assertTrue(page.startswith(">`!J-Machine Games`!\n>"))
-        self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n"
+        # the address line is itself the link: label <hex>, url lxmf@<hex>
+        self.assertIn("> zork1 (v3)\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
                       "  1 today · 2 this week · 2 this month", page)
-        self.assertIn("> planetfall (v5)\n  <90:12:34>\n"
+        self.assertIn("> planetfall (v5)\n  `[<90:12:34>`lxmf@901234]\n"
                       "  0 today · 0 this week · 1 this month", page)
         self.assertIn("2 players all time", page)
         # manual line: only for games in the manuals mapping, in the
@@ -263,28 +264,25 @@ class Helpers(unittest.TestCase):
                             PlayerStats({"zork1": (1, 2, 2),
                                          "planetfall": (0, 0, 1)}, 2),
                             manuals={"zork1": "ab:/file/zork1.pdf"})
-        self.assertIn("> zork1 (v3)\n  <ab:cd:ef>\n"
+        self.assertIn("> zork1 (v3)\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
                       "  1 today · 2 this week · 2 this month\n"
-                      "  `[play`lxmf@abcdef]\n"
                       "  `[manual`ab:/file/zork1.pdf]", paged)
         self.assertNotIn("`[manual`", paged.split("> planetfall")[1])
-        # the play + manual lines must match neither parse_page pattern
-        # (the real parse_page is exercised over the wire in the network
-        # suite — jclient is RNS-importing and this file is not)
+        # parse_page round-trips the address out of the link label (the real
+        # parse_page is exercised over the wire in the network suite)
         import re
         game_lines = re.findall(r"^> (\S+) \(v(\d+)\)\s*$", paged, re.M)
         self.assertEqual(game_lines, [("zork1", "3"), ("planetfall", "5")])
-        addrs = re.findall(r"^\s{2}(<[0-9a-fA-F:]+>)\s*$", paged, re.M)
+        addrs = re.findall(r"^\s{2}`\[(<[0-9a-fA-F:]+>)`lxmf@[0-9a-fA-F]+\]\s*$",
+                           paged, re.M)
         self.assertEqual(addrs, ["<ab:cd:ef>", "<90:12:34>"])
-        # clickable address is lxmf@<32-hex-hash> (meshchat strips "lxmf@"
-        # and requires exactly 32 chars): a real full-length address must
-        # produce the delimiters-free 32-char form
+        # full-length address: label keeps the prettyhexrep, url is the
+        # delimiters-free 32-char hash
         full = render_page("J", [("zork1", 3,
-                                  "<" + "ab:cd:12:34:56:78:9a:bc:de:f0"
-                                  + "11:22:33:44:55:66>")],
+                                  "<ab:cd:12:34:56:78:9a:bc:de:f0:11:22:33:44:55:66>")],
                            PlayerStats({}, 0))
-        self.assertIn("`[play`lxmf@abcd123456789abcdef0112233445566]",
-                      full)
+        self.assertIn("`[<ab:cd:12:34:56:78:9a:bc:de:f0:11:22:33:44:55:66>`"
+                      "lxmf@abcd123456789abcdef0112233445566]", full)
 
     def test_write_rns_config(self):
         with tempfile.TemporaryDirectory() as d:

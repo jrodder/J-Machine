@@ -131,8 +131,10 @@ class Client:
 
 def parse_page(text):
     """Parse the render_page format (jhost/protocol.py): a
-    '> name (vN)' line followed by a 2-space-indented '<hex:addr>' line.
-    Returns [(name, version:int, addr:str)]. Pure; [] if unparseable."""
+    '> name (vN)' line followed by a 2-space-indented address line. The
+    address is a micron link `` `[<hex:addr>`lxmf@<hash>] `` — extract the
+    prettyhexrep <hex:addr> label. Returns [(name, version:int, addr:str)].
+    Pure; [] if unparseable."""
     import re
     out = []
     cur = None
@@ -141,7 +143,8 @@ def parse_page(text):
         if m:
             cur = (m.group(1), int(m.group(2)))
             continue
-        m = re.match(r"^\s{2}(<[0-9a-fA-F:]+>)\s*$", line)
+        m = re.match(r"^\s{2}`\[(<[0-9a-fA-F:]+>)`lxmf@[0-9a-fA-F]+\]\s*$",
+                     line)
         if m and cur is not None:
             out.append((cur[0], cur[1], m.group(1)))
             cur = None

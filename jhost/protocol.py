@@ -207,9 +207,9 @@ def render_page(name, games, stats, manuals=None):
     (NomadNet Guide micron spec: links are backtick-delimited `[label`url]`,
     not markdown [label](url); files are served under the /file path). url
     = <32-hex page-dest hash>:/file/<stem>.pdf. parse_page ignores the line:
-    neither the '> name (vN)' nor the '<hex>' pattern matches it. Each game
-    block also gets a clickable `[play`lxmf@<32-hex-hash>] message link
-    (meshchat/Sideband open a conversation for it)."""
+    neither the '> name (vN)' nor the '<hex>' pattern matches it. The game's
+    address line is itself a clickable link: label = prettyhexrep <xx:..:xx>,
+    url = lxmf@<32-hex-hash> (meshchat/Sideband open a conversation)."""
     def plural(n, one, many):
         return one if n == 1 else many
     # H1 title bolded (micron `! toggle). The announce app_data is plain
@@ -226,16 +226,15 @@ def render_page(name, games, stats, manuals=None):
              ">", ">Games"]
     for stem, version, addr in games:
         lines.append(f"> {stem} (v{version})")
-        lines.append(f"  {addr}")
+        # the address is its own link: the visible label is the prettyhexrep
+        # <xx:..:xx> (copyable), and the link target is lxmf@<32-hex-hash>,
+        # which meshchat/Sideband turn into an open-conversation action
+        # (NomadNetworkPage.vue strips "lxmf@" and requires 32 hex chars,
+        # no delimiters).
+        lines.append("  `[" + addr + "`lxmf@"
+                     + addr.strip("<>").replace(":", "").lower() + "]")
         t, w, m = stats.per_game.get(stem, (0, 0, 0))
         lines.append(f"  {t} today · {w} this week · {m} this month")
-        # clickable LXMF address: meshchat/Sideband open a conversation when
-        # a micron link's url is "lxmf@<32-hex-hash>" (NomadNetworkPage.vue
-        # strips "lxmf@" and requires exactly 32 hex chars, no delimiters).
-        # addr is the prettyhexrep <xx:..:xx>; strip the delimiters to get
-        # the raw hash.
-        lines.append("  `[play`lxmf@"
-                     + addr.strip("<>").replace(":", "").lower() + "]")
         if manuals and stem in manuals:
             # micron link syntax: leading backtick enters format mode, then
             # `[label`url] (verified: NomadNet Guide.py + reference
