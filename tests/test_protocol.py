@@ -283,6 +283,10 @@ class Helpers(unittest.TestCase):
                            PlayerStats({}, 0))
         self.assertIn("`[<ab:cd:12:34:56:78:9a:bc:de:f0:11:22:33:44:55:66>`"
                       "lxmf@abcd123456789abcdef0112233445566]", full)
+        # footer: https:// link to the Android mapper (meshchat opens it in
+        # a new tab) — canonical micron form `[label`url], and parse_page's
+        # game regexes must not match it
+        self.assertIn("📱 Mapping Helper App for Android: `[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]", full)
 
     def test_write_rns_config(self):
         with tempfile.TemporaryDirectory() as d:

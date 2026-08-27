@@ -209,7 +209,10 @@ def render_page(name, games, stats, manuals=None):
     = <32-hex page-dest hash>:/file/<stem>.pdf. parse_page ignores the line:
     neither the '> name (vN)' nor the '<hex>' pattern matches it. The game's
     address line is itself a clickable link: label = prettyhexrep <xx:..:xx>,
-    url = lxmf@<32-hex-hash> (meshchat/Sideband open a conversation)."""
+    url = lxmf@<32-hex-hash> (meshchat/Sideband open a conversation).
+    The page footer links the Android mapper (Droid-Mapper): a plain
+    https:// link target — meshchat's onNodePageUrlClick opens http(s)
+    targets in a new browser tab (NomadNetworkPage.vue, verified)."""
     def plural(n, one, many):
         return one if n == 1 else many
     # H1 title bolded (micron `! toggle). The announce app_data is plain
@@ -242,6 +245,10 @@ def render_page(name, games, stats, manuals=None):
             # not an f-string: a literal '[' plus a subscript expression
             # trips PEP 701 bracket matching in CPython 3.14 (SyntaxError)
             lines.append("  `[manual`" + manuals[stem] + "]")
+    # footer link (plain string, not an f-string — see the PEP 701 note
+    # above): meshchat opens https:// link targets in a new browser tab
+    lines.append(">")
+    lines.append("📱 Mapping Helper App for Android: `[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]")
     return "\n".join(lines) + "\n"
 
 
