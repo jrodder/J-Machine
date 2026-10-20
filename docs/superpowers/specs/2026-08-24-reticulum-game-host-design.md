@@ -441,7 +441,8 @@ discarded by its only consumer (`jclient browse` prints name + address).
 **Guestbook (2026-10-20):** the page destination serves one more path,
 `/page/guestbook.mu` — **one board for the whole server, never per game** — and
 the index links it in its top section, under the odometer bar
-(backtick-delimited: `[Guestbook`<page-hash>:/page/guestbook.mu`). The page is
+(backtick-delimited, one glyph as the marker: `🖊️ `[Guestbook (post by
+message)`<page-hash>:/page/guestbook.mu`). The page is
 read-only; **players post by message**: `sign: <line>` to any game address
 appends the board line and replies to the poster. Host code is
 `jhost/guestbook.py` (pure, no RNS import) with the RNS glue in `host.py`, and
@@ -495,8 +496,10 @@ signature, and never creates a session), plus network test 7, which posts
 poster's hash prefix, the board shows the line escaped and on one line under
 that tag, and a second line inside the window is refused without being written.
 
-Page and reply copy carries no emoji (2026-10-20): the words carry the meaning,
-and a glyph that repeats a word is noise.
+Emoji: minimal, not zero (2026-10-20). One marker glyph where it earns its
+place — the joysticks around the node title, the pen on the board link — and
+none in prose or in replies, because words carry that meaning and a glyph that
+repeats a word is noise.
 
 ## 7. Testing and done bar
 

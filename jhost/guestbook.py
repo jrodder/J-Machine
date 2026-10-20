@@ -150,7 +150,7 @@ def render(name, page_hex, es, sign=None, now=None):
     No form on purpose: a page view has no author to tag (module docstring),
     and dropping the input also drops the grey-on-grey field meshchat renders
     from the page's micron style (MicronParser.js:276-284)."""
-    L = [">`!Guestbook`!", ">",
+    L = [">`!🖊️ Guestbook`!", ">",
          "`[« games`" + page_hex + ":/page/index.mu]", ">",
          "Leave me a message letting me know what you think!"]
     if sign:

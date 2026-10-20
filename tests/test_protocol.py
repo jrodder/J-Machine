@@ -421,7 +421,8 @@ class Helpers(unittest.TestCase):
                       "  `[manual`ab:/file/zork1.pdf]", paged)
         self.assertNotIn("`[manual`", paged.split("> planetfall")[1])
         # guestbook link line, and it must not be readable as a game
-        self.assertIn("`[Guestbook`abcd:/page/guestbook.mu]", paged)
+        self.assertIn("🖊️ `[Guestbook (post by message)`abcd:/page/guestbook.mu]",
+                      paged)
         # parse_page round-trips the address out of the link label (the real
         # parse_page is exercised over the wire in the network suite)
         import re

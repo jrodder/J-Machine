@@ -318,9 +318,10 @@ class Network(unittest.TestCase):
                 rc, out, _ = netrig.run_captured(base, "browse", work,
                                                  timeout=180)
                 self.assertEqual(rc, 0, out + "\n" + netrig.logs_tail(work))
-                self.assertIn("`[Guestbook`" + page_hex
-                              + ":/page/guestbook.mu]", out)
-                self.assertLess(out.index("`[Guestbook`"), out.index("> zork1"))
+                gb = "🖊️ `[Guestbook (post by message)`" + page_hex
+                self.assertIn(gb + ":/page/guestbook.mu]", out)
+                # top section: a visitor sees it before scrolling the game list
+                self.assertLess(out.index(gb), out.index("> zork1"))
                 self.assertEqual([n for n, _ in parse_page(out)], ["zork1"])
                 # the board says post-by-message and carries no form at all
                 rc2, out2, _ = netrig.run_captured(

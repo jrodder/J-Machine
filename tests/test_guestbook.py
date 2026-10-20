@@ -160,7 +160,7 @@ class Render(unittest.TestCase):
                       sign=("zork1", "<35:bc:be:f4:11:d9:98:4a:21:a9:0b:b9:"
                                  "57:66:d8:29>"),
                       now=1_000_000.0)
-        self.assertIn(">`!Guestbook`!", page)
+        self.assertIn(">`!🖊️ Guestbook`!", page)
         self.assertIn("`[« games`" + "abcd" * 8 + ":/page/index.mu]", page)
         # post by message: the link opens the conversation (lxmf@ target =
         # open-conversation action in meshchat/Sideband) and the line spells
@@ -192,7 +192,7 @@ class Render(unittest.TestCase):
         # a host serving no stories has no conversation to point at; the board
         # must still render
         page = render("J", "abcd" * 8, [], sign=None)
-        self.assertIn(">`!Guestbook`!", page)
+        self.assertIn(">`!🖊️ Guestbook`!", page)
         self.assertIn("No lines yet", page)
 
     def test_empty_board_says_so(self):

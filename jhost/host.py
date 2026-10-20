@@ -31,7 +31,7 @@ DEFAULT_ANNOUNCE_INTERVAL = 60 * 60
 
 
 class Host:
-    def __init__(self, data_dir, games_dir, name="J-Machine Games",
+    def __init__(self, data_dir, games_dir, name="🕹️ J-Machine Games 🕹️",
                  seed=None, port=4242, announce_interval=None):
         self.data_dir = Path(data_dir)
         self.games_dir = Path(games_dir)
