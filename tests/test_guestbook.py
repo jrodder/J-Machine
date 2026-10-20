@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from jhost.guestbook import (CAP, KEEP, NOTES, RATE, SHOW, _trim, banned,
-                             clean, entries, post, render)
+from jhost.guestbook import (ANON_RATE, CAP, KEEP, NOTES, RATE, SHOW, _trim,
+                             banned, clean, entries, post, render)
 
 A = "a" * 32
 B = "b" * 32
@@ -62,9 +62,16 @@ class Post(unittest.TestCase):
         self.assertEqual(self.f.post(text="hello world", now=500.0), "saved")
         r = json.loads(self.f.log.read_text().strip())
         self.assertEqual(r, {"ts": 500.0, "who": A, "text": "hello world"})
-        # who is the destination hash the LXMF signature proved, and the tag is
-        # its 6-char prefix — the same prefix the player's own client shows
+        # who is the destination hash the link proved, and the board's tag is
+        # its 6-char prefix — the prefix the player's own client shows them
         self.assertEqual(len(r["who"]), 32)
+
+    def test_anonymous_can_post(self):
+        # browsing identifies nobody by default (NomadNet Directory.py:377-382,
+        # meshchat has no UI for it): refusing anonymous posts would be a board
+        # nobody can use, so they are stored untagged and labelled 'anon'
+        self.assertEqual(self.f.post(author=None), "saved")
+        self.assertIsNone(json.loads(self.f.log.read_text().strip())["who"])
 
     def test_ban_is_checked_before_anything_is_written(self):
         self.f.ban.write_text(f"# spammers\n{A.upper()}\n")   # case-insensitive
@@ -75,7 +82,12 @@ class Post(unittest.TestCase):
     def test_no_ban_file_is_not_banned(self):
         self.assertFalse(banned(self.f.ban, A))
 
-    def test_rate_limit_per_identity(self):
+    def test_an_authorless_post_cannot_be_banned(self):
+        # the denylist names hashes; there is nothing verified to match
+        self.f.ban.write_text(A + "\n")
+        self.assertEqual(self.f.post(author=None), "saved")
+
+    def test_rate_limit_per_identified_player(self):
         self.assertEqual(self.f.post(text="one", now=1000.0), "saved")
         self.assertEqual(self.f.post(text="two", now=1000.0 + RATE - 1), "rate")
         self.assertEqual(self.f.post(text="two", author=B,
@@ -90,20 +102,26 @@ class Post(unittest.TestCase):
         self.assertEqual(self.f.post(text="first real line", now=1000.0),
                          "saved")
 
-    def test_one_board_per_server(self):
-        # one log for every game's 'sign:' traffic, so a player's second line
-        # is throttled no matter which conversation they used
-        self.assertEqual(self.f.post(text="one", now=1000.0), "saved")
-        self.assertEqual(self.f.post(text="two", now=1000.0 + RATE - 1),
-                         "rate")
+    def test_anonymous_posts_share_one_global_slot(self):
+        # no author to key on, so the throttle is server-wide: keeps a busy
+        # board human and a scripted one pointless
+        self.assertEqual(self.f.post(author=None, now=1000.0), "saved")
+        self.assertEqual(self.f.post(author=None, now=1000.0 + ANON_RATE - 1),
+                         "busy")
+        self.assertEqual(self.f.post(author=None, now=1000.0 + ANON_RATE),
+                         "saved")
 
-    def test_notes_are_replies(self):
-        # the notes go back to the poster as a message, not onto the page
-        self.assertEqual(set(NOTES), {"saved", "empty", "banned", "rate"})
-        self.assertEqual(NOTES["rate"], f"one line per {RATE // 60} min")
+    def test_the_anonymous_slot_does_not_gag_identified_players(self):
+        self.assertEqual(self.f.post(author=None, now=1000.0), "saved")
+        self.assertEqual(self.f.post(text="by hash", author=A, now=1000.0),
+                         "saved")
+
+    def test_notes_are_short_and_micron_free(self):
+        # notes render inside a `!bold` line on the board
+        self.assertEqual(set(NOTES), {"saved", "empty", "banned", "rate",
+                                      "busy"})
         for k, v in NOTES.items():
-            self.assertTrue(v and "\n" not in v, k)
-            self.assertNotIn("`", v, k)      # never micron markup back
+            self.assertTrue(v and "\n" not in v and "`" not in v, k)
 
 
 class Read(unittest.TestCase):
@@ -147,53 +165,40 @@ class Read(unittest.TestCase):
 
 
 class Render(unittest.TestCase):
-    def setUp(self):
-        self.f = Fix()
-
-    def tearDown(self):
-        self.f.close()
+    NOW = 1_000_000.0
 
     def test_board_shape(self):
         page = render("J", "abcd" * 8,
-                      [{"ts": 1_000_000.0 - 600, "who": A,
-                        "text": "hello \\`there\\`"}],
-                      sign=("zork1", "<35:bc:be:f4:11:d9:98:4a:21:a9:0b:b9:"
-                                 "57:66:d8:29>"),
-                      now=1_000_000.0)
+                      [{"ts": self.NOW - 600, "who": A,
+                        "text": "hello \\`there\\`"}], now=self.NOW)
         self.assertIn(">`!🖊️ Guestbook`!", page)
         self.assertIn("`[« games`" + "abcd" * 8 + ":/page/index.mu]", page)
-        # post by message: the link opens the conversation (lxmf@ target =
-        # open-conversation action in meshchat/Sideband) and the line spells
-        # out the verb
-        self.assertIn("send:  sign: your line", page)
-        self.assertIn("`[zork1`lxmf@35bcbef411d9984a21a90bb95766d829]", page)
-        # the author tag is 6 chars of the signed destination, never a name
+        # one field, one tap: the field's backtick part is its starting VALUE
+        # (so it must stay empty), and the link's third component '*' tells the
+        # client to send every field it rendered
+        self.assertIn("`<48|message`>", page)
+        self.assertIn("`[Post it`" + "abcd" * 8 + ":/page/guestbook.mu`*]",
+                      page)
+        # a verified post is marked with 6 chars of the signed destination
         self.assertIn("#" + "a" * 6 + " · 10 min ago\n  hello \\`there\\`",
                       page)
 
-    def test_row_without_a_tag_says_so(self):
-        # a hand-edited log, or a row left behind by the removed form build
-        # ({"who": null}), must not render a fake tag
+    def test_unverified_post_is_labelled_anon(self):
         page = render("J", "abcd" * 8,
-                      [{"ts": 1_000_000.0, "who": None, "text": "legacy"}],
-                      now=1_000_000.0)
-        self.assertIn("untagged · just now\n  legacy", page)
-        self.assertNotIn("#None", page)
+                      [{"ts": self.NOW, "who": None, "text": "sup"}],
+                      now=self.NOW)
+        self.assertIn("anon · just now\n  sup", page)
+        self.assertNotIn("#None", page)      # never a fake tag
 
-    def test_board_has_no_form(self):
-        # a page view carries no author (module docstring of guestbook.py), so
-        # there is nothing to tag and no field to render — dropping the input
-        # also drops the unreadable field meshchat styles from page micron
-        page = render("J", "abcd" * 8, [], sign=("zork1", "<ab:cd>"))
-        self.assertNotIn("<48", page)          # no text field
-        self.assertNotIn("`*]", page)          # no field-submitting link
-
-    def test_board_without_games(self):
-        # a host serving no stories has no conversation to point at; the board
-        # must still render
-        page = render("J", "abcd" * 8, [], sign=None)
-        self.assertIn(">`!🖊️ Guestbook`!", page)
-        self.assertIn("No lines yet", page)
+    def test_note_shows_after_a_submit(self):
+        # the submit re-renders this page, so the reply has to live on it
+        self.assertIn(NOTES["empty"], render("J", "abcd" * 8, [], "empty"))
+        self.assertIn(NOTES["busy"], render("J", "abcd" * 8, [], "busy"))
+        # an unknown note must not render an empty bold line
+        self.assertIn(NOTES["banned"], render("J", "abcd" * 8, [], "bogus"))
+        plain = render("J", "abcd" * 8, [], None)
+        for v in NOTES.values():
+            self.assertNotIn(v, plain)   # a plain view shows no reply line
 
     def test_empty_board_says_so(self):
         page = render("J", "abcd" * 8, [])

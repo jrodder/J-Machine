@@ -293,22 +293,23 @@ class Network(unittest.TestCase):
             finally:
                 stop_host(h)
 
-    def test_7_guestbook_sign(self):
-        """spec §6 guestbook: "sign: <line>" in a game conversation posts to
-        the server-wide board, tagged with the sender hash the LXMF signature
-        proved. The page itself stays read-only on purpose: a page view carries
-        no author (guestbook.py cites RNS/Link.py, NomadNet Directory.py and
-        meshchat.py for why), so posting rides the signing channel, where every
-        client identifies automatically. Backticks in the payload must come back
-        escaped, or player text could restyle the page or forge a link."""
+    def test_7_guestbook(self):
+        """spec §6 guestbook: one field and one tap over a real link, plus the
+        verified message door on the same board. The form post arrives as
+        request_data["field_message"] (NomadNet Browser.py:425-440, meshchat
+        meshchat.py:2198-2212 send that prefix) and, because this client does
+        not identify — exactly like NomadNet by default (Directory.py:377-382)
+        and meshchat (no UI for its route) — it is stored untagged and reads
+        'anon'. A 'sign:' message, whose LXMF signature proves its sender,
+        lands on the same board tagged with that hash prefix. Backticks must
+        come back escaped or player text could restyle the page."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             h, dests = start_host(d, ["zork1.z3"], 4347)
             try:
                 work = d / "c7"
                 page_hex = dests["page"].strip("<>").replace(":", "").lower()
-                zork = dests["games"]["zork1"]
-                zork_hex = zork.strip("<>").replace(":", "").lower()
+                gb = "🖊️ `[Guestbook (post by message)`" + page_hex
                 base = [sys.executable, "-u", "-m", "jclient", "browse",
                         dests["page"], "--data-dir", str(work),
                         "--identity", str(work / "identity"),
@@ -318,46 +319,52 @@ class Network(unittest.TestCase):
                 rc, out, _ = netrig.run_captured(base, "browse", work,
                                                  timeout=180)
                 self.assertEqual(rc, 0, out + "\n" + netrig.logs_tail(work))
-                gb = "🖊️ `[Guestbook (post by message)`" + page_hex
                 self.assertIn(gb + ":/page/guestbook.mu]", out)
-                # top section: a visitor sees it before scrolling the game list
                 self.assertLess(out.index(gb), out.index("> zork1"))
                 self.assertEqual([n for n, _ in parse_page(out)], ["zork1"])
-                # the board says post-by-message and carries no form at all
-                rc2, out2, _ = netrig.run_captured(
-                    base + ["--path", "/page/guestbook.mu"], "board", work,
-                    timeout=180)
-                self.assertEqual(rc2, 0, out2 + "\n" + netrig.logs_tail(work))
-                self.assertIn("send:  sign: your line", out2)
-                self.assertIn("`[zork1`lxmf@" + zork_hex + "]", out2)
-                self.assertNotIn("<48", out2)
-                self.assertIn("No lines yet", out2)
-                # post: the reply confirms with the same 6-char prefix the
-                # poster's own client shows them
-                rc3, out3 = netrig.play_once(
-                    zork, ["sign: first line`!` and [x](y)"], work,
-                    "sign1", timeout=180, port=4347)
-                self.assertEqual(rc3, 0, out3 + "\n" + netrig.logs_tail(work))
                 log = d / "host" / "guestbook.jsonl"
-                rec = json.loads(log.read_text().strip())
-                self.assertEqual(len(rec["who"]), 32)
-                self.assertIn("signed — thanks! #" + rec["who"][:6], out3)
-                # and the line is on the board: tagged, escaped, one line
+                board = base + ["--path", "/page/guestbook.mu"]
+                # the board: one empty field, one submit link, nothing posted
+                rc2, out2, _ = netrig.run_captured(board, "board", work,
+                                                   timeout=180)
+                self.assertEqual(rc2, 0, out2 + "\n" + netrig.logs_tail(work))
+                self.assertIn("`<48|message`>", out2)
+                self.assertIn("`[Post it`" + page_hex
+                              + ":/page/guestbook.mu`*]", out2)
+                self.assertIn("No lines yet", out2)
+                # tap: submit the field with micron markup in it
+                rc3, out3, _ = netrig.run_captured(
+                    board + ["--field", "message=first line`!` and [x](y)"],
+                    "post", work, timeout=180)
+                self.assertEqual(rc3, 0, out3 + "\n" + netrig.logs_tail(work))
+                self.assertIn("signed — thanks!", out3)
+                self.assertIn("anon · just now\n"
+                              "  first line\\`!\\` and [x](y)", out3)
+                self.assertEqual(len(log.read_text().splitlines()), 1)
+                self.assertIsNone(json.loads(log.read_text())["who"])
+                # a second tap inside the anonymous slot is refused, unwritten,
+                # and its text is never echoed
                 rc4, out4, _ = netrig.run_captured(
-                    base + ["--path", "/page/guestbook.mu"], "board2", work,
+                    board + ["--field", "message=too soon"], "post2", work,
                     timeout=180)
                 self.assertEqual(rc4, 0, out4 + "\n" + netrig.logs_tail(work))
-                self.assertIn("#" + rec["who"][:6] + " · just now\n"
-                              "  first line\\`!\\` and [x](y)", out4)
-                # a second line inside the window is refused: no write, and the
-                # rejected text is never echoed
-                rc5, out5 = netrig.play_once(
-                    zork, ["sign: too soon for a second line"], work,
-                    "sign2", timeout=180, port=4347)
-                self.assertEqual(rc5, 0, out5 + "\n" + netrig.logs_tail(work))
-                self.assertIn("one line per 10 min", out5)
-                self.assertNotIn("too soon", out5)
+                self.assertIn("one line per 60 seconds", out4)
+                self.assertNotIn("too soon", out4)
                 self.assertEqual(len(log.read_text().splitlines()), 1)
+                # the verified door: same board, tagged by the signed sender
+                rc5, out5 = netrig.play_once(
+                    dests["games"]["zork1"], ["sign: posted by message"],
+                    work, "sign1", timeout=180, port=4347)
+                self.assertEqual(rc5, 0, out5 + "\n" + netrig.logs_tail(work))
+                rec = json.loads(log.read_text().splitlines()[-1])
+                self.assertEqual(len(rec["who"]), 32)
+                self.assertIn("signed — thanks! #" + rec["who"][:6], out5)
+                rc6, out6, _ = netrig.run_captured(board, "board2", work,
+                                                   timeout=180)
+                self.assertEqual(rc6, 0, out6 + "\n" + netrig.logs_tail(work))
+                self.assertIn("#" + rec["who"][:6] + " · just now\n"
+                              "  posted by message", out6)
+                self.assertIn("anon · ", out6)     # both kinds on one board
             finally:
                 stop_host(h)
 

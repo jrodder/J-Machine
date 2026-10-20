@@ -441,39 +441,50 @@ discarded by its only consumer (`jclient browse` prints name + address).
 **Guestbook (2026-10-20):** the page destination serves one more path,
 `/page/guestbook.mu` — **one board for the whole server, never per game** — and
 the index links it in its top section, under the odometer bar
-(backtick-delimited, one glyph as the marker: `🖊️ `[Guestbook (post by
-message)`<page-hash>:/page/guestbook.mu`). The page is
-read-only; **players post by message**: `sign: <line>` to any game address
-appends the board line and replies to the poster. Host code is
-`jhost/guestbook.py` (pure, no RNS import) with the RNS glue in `host.py`, and
-the verb is intercepted in `protocol.handle_message` before any session work —
-posting never starts a game, spends a turn or moves the odometer.
+(`🖊️ `[Guestbook (post by message)`<page-hash>:/page/guestbook.mu`). Posting is
+one line typed into one field and one tap: `` `<48|message`> `` plus
+`` `[Post it`<page-hash>:/page/guestbook.mu`*] ``, whose third backtick
+component `*` is what tells the client to send every field it rendered. Host
+code is `jhost/guestbook.py` (pure, no RNS import) with the RNS glue in
+`host.py`, which serves the view and the post from the same handler: a submit
+arrives as `request_data["field_message"]` because that prefix is what both
+clients send (NomadNet `Browser.py:425-440`, meshchat `meshchat.py:2198-2212`).
+The field's backtick part is its **starting value**, not a hint, so it is left
+empty — a placeholder would have to be deleted before posting. There is also a
+second, verified door, deliberately not advertised on the page: a
+`sign: <line>` message to any game address appends to the same board
+(`protocol.handle_message` intercepts it before any session work, so it never
+starts a game, spends a turn or moves the odometer).
 
-*Why the message channel and not a form on the page — verified in source.* A
-page view cannot carry an author: RNS reveals a requester only if the client
-calls `Link.identify()` (`RNS/Link.py:454-469`; the responder adopts it on
-`LINKIDENTIFY` at `:971-987` and passes it to handlers at `:829`), and neither
-mainstream client does that while browsing — NomadNet identifies only for nodes
-whose "Identify when connecting" box the user has ticked, false by default
-(`Directory.py:377-382`, checkbox at `Network.py:747`), and meshchat exposes it
-as an API route that no UI calls (`meshchat.py:1869-1889`). The only other hash
-in reach is the link's own id, a truncated hash of the ephemeral key exchange
-and therefore new every connection (`Link.py:336-346`) — displaying it would
-look like a handle and prove nothing. A message, by contrast, is signed and
-names its source destination, the same value the save slot is named after
-(`host.py`: `sender = msg.source_hash.hex()`), so the tag is real in every
-client with no checkbox, no account and no extra announce against the ~1/hour
-rate budget. A micron form was built and measured first (fields and the
-`*`-submit link do work — NomadNet `Browser.py:425-440`, meshchat
-`meshchat.py:2198-2212` both prefix `field_<name>`) and removed: it could only
-ever have printed `anon`, and meshchat styles the input from the page's micron
-CSS, which rendered as illegible grey-on-white text (`MicronParser.js:276-284`).
+*Posting is usually anonymous, and no page-side mechanism can change that.* RNS
+reveals a requester only if the client calls `Link.identify()`
+(`RNS/Link.py:454-469`; adopted on `LINKIDENTIFY` at `:971-987`, passed to
+handlers at `:829`), and clients do it for protocols they opted into (LXMF
+propagation retrieval — `thatSFguy/reticulum-webclient`'s `identify()`-d `/get`,
+whose wire errors include `0xf0 not identified on link`), not while browsing:
+NomadNet identifies only where the user ticked "Identify when connecting"
+(`false` by default, `Directory.py:377-382`, checkbox `Network.py:747`), and
+meshchat's route has no UI calling it (`meshchat.py:1869-1889`). A handler
+**cannot request proof** — `Destination` offers `ALLOW_NONE/ALL/LIST`
+(`Destination.py:74-77`), which only filters peers that already identified, and
+there is no identity-demand hook anywhere in RNS. Surveyed 2026-10-20 rather
+than assuming: the two message boards in the wild both take posts over LXMF and
+both derive the username from the sender hash (`cotteux/MicronCMS`
+`messageboard.py:26-29`, `chengtripp/lxmf_messageboard` `messageboard.py:26-29`,
+`source_hash_text[0:5]`); the only page "user authentication" found
+(`etux/Node_App_Template`) is a hand-rolled username/password form with a
+`link_id` session (`core.py:90-98`), which is worse than the problem. Consequence
+for the board: an unidentified post is stored with `who: null` and labelled
+`anon` — nobody is turned away for not identifying — and a post whose link did
+identify, or that came in by message, is marked `#<6 hex of the sender
+destination>`, the same prefix the poster's own client shows them, which is why
+the message door exists at all. Typed names are **not** offered: a page cannot
+verify one, so it would be a claim dressed as an identity.
 
-*Tag and limits.* A line is marked with the first 6 hex of the poster's
-destination hash (`#6f5223`) — the prefix their own client shows them — and one
-line per 10 minutes per player. Minting an identity is free, so no per-author
-rule stops a determined spammer; these limits exist to keep the board and the
-log usable, and the operator's real tool is deleting a line.
+*Limits.* One line per 10 min per identified poster; anonymous posts share one
+server-wide slot per 60 s (there is no author to key on). Minting an identity is
+free, so nothing here stops a determined spammer; the limits keep the board and
+the log usable and the operator's real tool is deleting a line.
 
 *Posted text is escaped, always:* one line (CR/LF collapsed) and backticks
 backslash-escaped — backtick is micron's only escape/format character, so that
@@ -482,19 +493,25 @@ Reticulum community template learned this the hard way (commit "fix micron
 styling in user input breaking pages") and RNS's own generator escapes the same
 way (`RNS/Utilities/rngit/highlight.py:209`). Rejected text is never echoed.
 
-*Storage and moderation are files under `data/`, read per request:* the log is
-`data/guestbook.jsonl` (append one short line, atomic at that size, trimmed to
-the last 200 records) and the denylist is `data/guestbook-banned.txt` (one
-destination hash per line, `#` comments). Deleting an abusive line needs no
-restart; nothing about the board is cached in the host.
+*Known client defect, not ours:* meshchat stamps micron input fields with the
+active palette's colour (`MicronParser.js` `applyStyleToElement`), so with
+`darkTheme` on and a light page background, typed text renders `#ddd` on white.
+Reproduced by running its own parser over our field line in both themes; no
+page-side markup overrides it.
 
-*Gate:* `tests/test_guestbook.py` (pure: caps, collapsing, escaping, rate limit,
-ban file, tail order, trim, board renders with no games and no form) and
-`tests/test_protocol.py` (the verb is inert when unwired, needs a verified
-signature, and never creates a session), plus network test 7, which posts
-`sign:` over a real LXMF conversation and asserts the reply carries the
-poster's hash prefix, the board shows the line escaped and on one line under
-that tag, and a second line inside the window is refused without being written.
+*Storage and moderation are files under `data/`, read per request:* the log is
+`data/guestbook.jsonl` (`{"ts", "who", "text"}`, newest last, trimmed to 200)
+and the denylist is `data/guestbook-banned.txt` (one destination hash per line,
+`#` comments; it can only name identified posters). Deleting an abusive line
+needs no restart; nothing about the board is cached in the host.
+
+*Gate:* `tests/test_guestbook.py` (pure: caps, collapsing, escaping, both rate
+slots, denylist, tail order, trim, `anon` labelling never fakes a tag, notes
+micron-free) plus network test 7, which submits the field over a real link and
+asserts the post comes back micron-escaped and labelled `anon` with one record
+written, refuses a second tap inside the anonymous slot without writing or
+echoing it, and then posts `sign:` over a real LXMF conversation to check that
+same board shows the hash-prefixed line beside the anonymous one.
 
 Emoji: minimal, not zero (2026-10-20). One marker glyph where it earns its
 place — the joysticks around the node title, the pen on the board link — and

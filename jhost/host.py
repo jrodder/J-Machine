@@ -167,24 +167,31 @@ class Host:
 
     def _guest_handler(self, path, request_data, request_id,
                        remote_identity, requested_at):
-        """Guestbook board — read-only on this channel by design: posting goes
-        through the "sign:" message verb, because a page view carries no
-        author to tag (guestbook.py's docstring cites why). The 5-parameter
-        shape is required (RNS 1.5.0 inspects the handler signature).
+        """Board view, and the post target when a field came in. A micron
+        submit arrives as request_data["field_message"] — that prefix is what
+        both NomadNet (Browser.py:425-440) and meshchat (meshchat.py:2198-2212)
+        send — so one handler serves both; request_data is b"" for a plain
+        fetch, which is what the dict test separates. The 5-parameter shape is
+        required (RNS 1.5.0 inspects the handler signature).
 
-        `sign` names one game to post through (the first, stable order) so the
-        board's link opens a conversation the player can type into."""
-        page_hex = RNS.hexrep(self.page_dest.hash, delimit=False)
-        games = sorted(self.destinations)
+        remote_identity is None for most visitors while browsing (guestbook.py
+        cites why), so an unidentified post is stored with who: null and reads
+        as 'anon' — nobody gets turned away for not identifying."""
+        note = None
+        if isinstance(request_data, dict) and "field_message" in request_data:
+            who = (RNS.hexrep(remote_identity.hash, delimit=False)
+                   if remote_identity is not None else None)
+            note = guestbook.post(self.gb_log, self.gb_ban, who,
+                                  request_data.get("field_message"))
         return guestbook.render(
-            self.name, page_hex, guestbook.entries(self.gb_log),
-            sign=(games[0], RNS.prettyhexrep(self.destinations[games[0]].hash))
-            if games else None).encode()
+            self.name, RNS.hexrep(self.page_dest.hash, delimit=False),
+            guestbook.entries(self.gb_log), note).encode()
 
     def _sign(self, sender, line):
-        """"sign: <line>" in any game conversation -> a board line, and the
-        reply. Tagged with the sender's own hash prefix, which their client
-        already shows them, and which the LXMF signature just proved."""
+        """"sign: <line>" in any game conversation -> the same board, on the
+        channel that always identifies its sender, so the reply can promise a
+        verified tag (guestbook.py: the two message boards in the wild work the
+        same way). Not advertised on the page; posting never requires it."""
         note = guestbook.post(self.gb_log, self.gb_ban, sender, line)
         if note != "saved":
             return guestbook.NOTES[note]

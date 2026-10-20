@@ -110,22 +110,28 @@ In-game `save`/`restore` verbs map to that slot with no prompt.
 ### Guestbook (operator)
 
 One board for the whole server, linked from the top of the page
-(`<page-hash>:/page/guestbook.mu`). The page is read-only: players post by
-message, sending `sign: <line>` to any game address, and each line is marked
-with the first 6 hex of the sender's destination hash (the LXMF signature is
-what proves it — a page view carries no author, so the board has no form).
-One line per player per 10 minutes.
+(`<page-hash>:/page/guestbook.mu`). A visitor types one line into one field and
+taps **Post it**. Posts are marked with the poster's destination hash prefix
+(`#6f5223`) when their client identified to the node, otherwise `anon` — most
+clients browse anonymously, so `anon` is the normal case and nobody is turned
+away for it. Limit: one line per 10 min per identified poster, one per 60 s
+server-wide for anonymous posts.
+
+There is also a verified door that the page doesn't advertise: sending
+`sign: <line>` to any game address appends to the same board, tagged with the
+sender hash its LXMF signature proves.
 
 Both files are plain and read per request, so moderating needs no restart:
 
 - `data/guestbook.jsonl` — the log (`{"ts", "who", "text"}` per line, newest
   last, trimmed to 200). Delete a line to drop an entry.
 - `data/guestbook-banned.txt` — denylist: one destination hash per line, `#`
-  comments allowed.
+  comments allowed (only identified posters can be named).
 
-To try a post from a terminal: `echo "sign: hello" | python3 -m jclient play
-<game-address>`, then `python3 -m jclient browse <page-hash> --path
-/page/guestbook.mu` to read it back.
+To try it from a terminal: `python3 -m jclient browse <page-hash> --path
+/page/guestbook.mu --field message="hello"` (that is a micron submit, sent as
+`field_message` like the real clients do), or
+`echo "sign: hello" | python3 -m jclient play <game-address>`.
 
 ### Verify
 
