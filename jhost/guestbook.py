@@ -166,7 +166,11 @@ def render(name, page_hex, es, sign=None, now=None):
     else:
         L.append(f">Last {len(es)}")
         for e in es:
-            L.append("#" + str(e.get("who", ""))[:TAG]
-                     + " · " + ago(e.get("ts", 0), now))
+            # a record can only be tagged if it arrived signed; anything else
+            # (a hand-edited log, a row from the old form build) says so
+            # plainly rather than printing "#None"
+            who = str(e.get("who") or "")[:TAG]
+            L.append(("#" + who if who else "untagged") + " · "
+                     + ago(e.get("ts", 0), now))
             L.append("  " + str(e.get("text", "")))
     return "\n".join(L) + "\n"

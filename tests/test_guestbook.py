@@ -171,6 +171,15 @@ class Render(unittest.TestCase):
         self.assertIn("#" + "a" * 6 + " · 10 min ago\n  hello \\`there\\`",
                       page)
 
+    def test_row_without_a_tag_says_so(self):
+        # a hand-edited log, or a row left behind by the removed form build
+        # ({"who": null}), must not render a fake tag
+        page = render("J", "abcd" * 8,
+                      [{"ts": 1_000_000.0, "who": None, "text": "legacy"}],
+                      now=1_000_000.0)
+        self.assertIn("untagged · just now\n  legacy", page)
+        self.assertNotIn("#None", page)
+
     def test_board_has_no_form(self):
         # a page view carries no author (module docstring of guestbook.py), so
         # there is nothing to tag and no field to render — dropping the input
