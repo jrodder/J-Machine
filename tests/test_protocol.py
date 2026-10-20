@@ -423,6 +423,8 @@ class Helpers(unittest.TestCase):
         # guestbook link line, and it must not be readable as a game
         self.assertIn("🖊️ `[Guestbook (post by message)`abcd:/page/guestbook.mu]",
                       paged)
+        # ...and a blank line of its own before the game list
+        self.assertIn("`abcd:/page/guestbook.mu]\n>\n>Games", paged)
         # parse_page round-trips the address out of the link label (the real
         # parse_page is exercised over the wire in the network suite)
         import re

@@ -335,8 +335,8 @@ def render_page(name, games, stats, manuals=None, guestbook=None):
         # list, and it cannot be read as a game: parse_page's name anchor
         # needs '> word' and its address line needs an indented
         # [label`lxmf@…] link, neither of which this is
-        lines.append("🖊️ `[Guestbook (post by message)`" + guestbook
-                   + "]")
+        lines.append("🖊️ `[Guestbook (post by message)`" + guestbook + "]")
+        lines.append(">")   # air between the link and the game list
     lines.append(">Games")
     for stem, addr in games:
         # the bare '> name' line is jclient's parse anchor (spec §7): the
