@@ -102,7 +102,7 @@ class Network(unittest.TestCase):
                 self.assertEqual(rc, 0, out + "\n" + netrig.logs_tail(work))
                 self.assertIn("== games ==", out)
                 games = parse_page(out)
-                addr = dict((n, a) for n, _v, a in games)["zork1"]
+                addr = dict(games)["zork1"]
                 self.assertEqual(addr, dests["games"]["zork1"])
                 rc2, out2 = netrig.play_once(addr, ["look"], work, "p1",
                                              timeout=300, port=4341)

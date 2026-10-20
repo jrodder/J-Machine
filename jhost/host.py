@@ -46,7 +46,6 @@ class Host:
         self.routers = {}             # stem -> LXMRouter
         self.destinations = {}        # stem -> delivery Destination
         self.stories = {}             # stem -> story Path
-        self.versions = {}            # stem -> header version (read once)
         self.manuals = {}             # stem -> games/<stem>.pdf Path
         self.page_dest = None
 
@@ -116,10 +115,6 @@ class Host:
         self.routers[stem] = router
         self.destinations[stem] = dl
         self.stories[stem] = story
-        # header byte 0 = version (byte 1 is 0x00 — a 2-byte read yields
-        # 768/1280/2048, the v768 bug); read once, not per page render
-        with open(story, "rb") as f:
-            self.versions[stem] = f.read(1)[0]
         manual = self.games_dir / f"{stem}.pdf"
         if manual.exists():
             # served from the PAGE destination (the public one) under the
@@ -146,7 +141,7 @@ class Host:
                       remote_identity, requested_at):
         # RNS 1.5.0 response generators must take exactly 5 (or 6) params
         # (Link.handle_request inspects the signature — verified 1.5.0)
-        games = [(stem, self.versions[stem], RNS.prettyhexrep(d.hash))
+        games = [(stem, RNS.prettyhexrep(d.hash))
                  for stem, d in sorted(self.destinations.items())]
         # page is rendered per request (spec §6): stats computed fresh from
         # the slot tree — a file stat per player plus one small sidecar read,

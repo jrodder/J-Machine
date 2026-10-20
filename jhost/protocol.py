@@ -277,7 +277,7 @@ def _autosave(store, game, sender, s):
 
 
 def render_page(name, games, stats, manuals=None):
-    """Micron page text (spec §6). games = [(stem, version, addr_str)];
+    """Micron page text (spec §6). games = [(stem, addr_str)];
     addr_str = pretty hexrep of the game's lxmf.delivery destination hash.
     stats = player_stats(...) — cumulative counts + last-move recency: one
     odometer bar under the title, one stats line per game (spec §6). Only
@@ -289,7 +289,7 @@ def render_page(name, games, stats, manuals=None):
     (NomadNet Guide micron spec: links are backtick-delimited `[label`url]`,
     not markdown [label](url); files are served under the /file path). url
     = <32-hex page-dest hash>:/file/<stem>.pdf. parse_page ignores the line:
-    neither the '> name (vN)' nor the '<hex>' pattern matches it. The game's
+    neither the '> name' nor the '<hex>' pattern matches it. The game's
     address line is itself a clickable link: label = prettyhexrep <xx:..:xx>,
     url = lxmf@<32-hex-hash> (meshchat/Sideband open a conversation).
     The page footer links the Android mapper (Droid-Mapper): a plain
@@ -319,8 +319,11 @@ def render_page(name, games, stats, manuals=None):
              "progress is saved per player automatically.",
              " · ".join(bar),
              ">", ">Games"]
-    for stem, version, addr in games:
-        lines.append(f"> {stem} (v{version})")
+    for stem, addr in games:
+        # the bare '> name' line is jclient's parse anchor (spec §7): the
+        # Z-machine version suffix used to sit here and added nothing a
+        # player reads, while costing the parse contract a strict '(vN)'
+        lines.append(f"> {stem}")
         # the address is its own link: the visible label is the prettyhexrep
         # <xx:..:xx> (copyable), and the link target is lxmf@<32-hex-hash>,
         # which meshchat/Sideband turn into an open-conversation action

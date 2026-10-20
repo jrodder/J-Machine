@@ -62,7 +62,7 @@ def cmd_browse(a):
     text = page.decode(errors="replace")
     print(text, end="")
     print("== games ==")
-    for name, _version, addr in parse_page(text):
+    for name, addr in parse_page(text):
         print(f"{name} {addr}")
     return 0
 

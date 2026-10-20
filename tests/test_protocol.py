@@ -317,18 +317,18 @@ class PlayerStatsTests(unittest.TestCase):
             p.close()
 
     def test_render_page_stats(self):
-        page = render_page("J", [("zork1", 3, "<ab:cd:ef>")],
+        page = render_page("J", [("zork1", "<ab:cd:ef>")],
                            PlayerStats({"zork1": GameStats(3, 1, 42, 0.0)},
                                        12, 42, 1))
         self.assertIn("42 moves · 12 players all time · 🏆 1 win", page)
-        self.assertIn("> zork1 (v3)\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
+        self.assertIn("> zork1\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
                       "  3 explorers · 🏆 1 finished", page)
 
     def test_render_page_zero_pieces_omitted(self):
         """The odometer never shows a 0 it has no reason to show, and a game
         nobody has started gets no stats line at all."""
-        page = render_page("J", [("zork1", 3, "<ab:cd:ef>"),
-                                 ("yomama", 3, "<be:ef:00>")],
+        page = render_page("J", [("zork1", "<ab:cd:ef>"),
+                                 ("yomama", "<be:ef:00>")],
                            PlayerStats({}, 0, 0, 0))
         self.assertIn("progress is saved per player automatically.\n"
                       "0 players all time\n", page)
@@ -351,40 +351,40 @@ class Helpers(unittest.TestCase):
         stats = PlayerStats({"zork1": GameStats(2, 1, 30, lm),
                              "planetfall": GameStats(1, 0, 4, lm)}, 2, 34, 1)
         page = render_page("J-Machine Games",
-                           [("zork1", 3, "<ab:cd:ef>"),
-                            ("planetfall", 5, "<90:12:34>")], stats)
+                           [("zork1", "<ab:cd:ef>"),
+                            ("planetfall", "<90:12:34>")], stats)
         self.assertTrue(page.startswith(">`!J-Machine Games`!\n>"))
         # the address line is itself the link: label <hex>, url lxmf@<hex>
-        self.assertIn("> zork1 (v3)\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
+        self.assertIn("> zork1\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
                       "  2 explorers · last move 10 min ago · 🏆 1 finished",
                       page)
         # a game nobody has finished omits that piece (the odometer never
         # leads with a zero), and singular/plural stays honest
-        self.assertIn("> planetfall (v5)\n  `[<90:12:34>`lxmf@901234]\n"
+        self.assertIn("> planetfall\n  `[<90:12:34>`lxmf@901234]\n"
                       "  1 explorer · last move 10 min ago\n", page)
         self.assertIn("34 moves · 2 players all time · 🏆 1 win", page)
         # manual line: only for games in the manuals mapping, in the
         # canonical micron form `[label`<hash>:/file/<name>] (NomadNet
         # Guide), and the url must survive parse_page's regexes untouched
         paged = render_page("J-Machine Games",
-                            [("zork1", 3, "<ab:cd:ef>"),
-                             ("planetfall", 5, "<90:12:34>")], stats,
+                            [("zork1", "<ab:cd:ef>"),
+                             ("planetfall", "<90:12:34>")], stats,
                             manuals={"zork1": "ab:/file/zork1.pdf"})
-        self.assertIn("> zork1 (v3)\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
+        self.assertIn("> zork1\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
                       "  2 explorers · last move 10 min ago · 🏆 1 finished\n"
                       "  `[manual`ab:/file/zork1.pdf]", paged)
         self.assertNotIn("`[manual`", paged.split("> planetfall")[1])
         # parse_page round-trips the address out of the link label (the real
         # parse_page is exercised over the wire in the network suite)
         import re
-        game_lines = re.findall(r"^> (\S+) \(v(\d+)\)\s*$", paged, re.M)
-        self.assertEqual(game_lines, [("zork1", "3"), ("planetfall", "5")])
+        game_lines = re.findall(r"^> (\S+)\s*$", paged, re.M)
+        self.assertEqual(game_lines, ["zork1", "planetfall"])
         addrs = re.findall(r"^\s{2}`\[(<[0-9a-fA-F:]+>)`lxmf@[0-9a-fA-F]+\]\s*$",
                            paged, re.M)
         self.assertEqual(addrs, ["<ab:cd:ef>", "<90:12:34>"])
         # full-length address: label keeps the prettyhexrep, url is the
         # delimiters-free 32-char hash
-        full = render_page("J", [("zork1", 3,
+        full = render_page("J", [("zork1",
                                   "<ab:cd:12:34:56:78:9a:bc:de:f0:11:22:33:44:55:66>")],
                            PlayerStats({}, 0, 0, 0))
         self.assertIn("`[<ab:cd:12:34:56:78:9a:bc:de:f0:11:22:33:44:55:66>`"

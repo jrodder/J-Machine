@@ -364,10 +364,10 @@ progress is saved per player automatically.
 7 moves · 4 players all time · 🏆 1 win
 >
 >Games
-> Zork I (v5)
+> zork1
   <ab:cd:12:...:ef>        # prettyhexrep of the game's lxmf.delivery hash
   2 explorers · last move 6 min ago · 🏆 1 finished
-> Planetfall (v5)
+> planetfall
   <90:12:...:34>
   1 explorer · last move 2 h ago
 ```
@@ -428,6 +428,15 @@ The rendered game name is the **story filename stem** (e.g. `zork1`, not a
 display name like `Zork I`) — the example above is illustrative; the stem is
 the convention used throughout §3/§4/§5 (save slots, identities, session keys)
 and is what the `render_page`/`parse_page` format carries (no spaces).
+
+**No version suffix (2026-10-20):** the name line used to read `> zork1 (v5)`
+with the Z-machine version from header byte 0. It was dropped — no player
+reads the protocol version, and the host no longer reads or stores it. The
+parse anchor is therefore the looser `^> (\S+)\s*$`, made safe by what already
+follows it: a name only counts when the next line is a 2-space address link
+(`>Games`, the bare `>` separators and the `>`!title`!` heading can never be
+read as a game). `parse_page` returns `(name, addr)` pairs — the version was
+discarded by its only consumer (`jclient browse` prints name + address).
 
 ## 7. Testing and done bar
 
