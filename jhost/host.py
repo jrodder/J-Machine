@@ -149,7 +149,8 @@ class Host:
         games = [(stem, self.versions[stem], RNS.prettyhexrep(d.hash))
                  for stem, d in sorted(self.destinations.items())]
         # page is rendered per request (spec §6): stats computed fresh from
-        # the slot files — a handful of file stats, no cache to invalidate
+        # the slot tree — a file stat per player plus one small sidecar read,
+        # no cache to invalidate
         stats = player_stats(self.store.root)
         page_hex = RNS.hexrep(self.page_dest.hash, delimit=False)
         # micron URL format (NomadNet Guide): <32-hex dest hash>:<path>

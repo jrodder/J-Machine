@@ -1,13 +1,14 @@
 """Spec §7 tests 6-7: protocol edge-behavior table + save sanity.
 No RNS import — milliseconds each."""
-import datetime
+import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from jhost.protocol import (FileSaveStore, INPUT_CAP, PlayerStats,
-                            handle_message, player_stats, render_page,
+from jhost.protocol import (FileSaveStore, GameStats, INPUT_CAP, PlayerStats,
+                            _ago, handle_message, player_stats, render_page,
                             write_rns_config)
 from tests.conformance.run_conformance import play_session_lines
 from tests.util import norm
@@ -188,49 +189,152 @@ class Protocol(unittest.TestCase):
 
 
 class PlayerStatsTests(unittest.TestCase):
-    """spec §6 page stats: the autosave slot files ARE the player
-    registry (one per (game, player), rewritten every turn, never
-    deleted — spec §5), so mtime = last turn. Per-game line: today /
-    this week / this month (host local clock: since midnight, this
-    Monday, this 1st). Overall bar: all-time unique, all games.
-    NOW is a fixed Tuesday (2026-08-25 12:00) -> the week starts
-    Monday 2026-08-24 00:00 and the month 2026-08-01 00:00."""
+    """spec §6 page stats: the autosave slot tree IS the player registry
+    (one slot per (game, player), rewritten every turn, never deleted —
+    spec §5), so slot count = players who ever started a game and mtime =
+    that player's last turn; the sibling <sender>.json adds the move count
+    and the win flag. The page reports what is on disk (pruning a slot takes
+    its counters with it), so there is no separate ledger to reconcile."""
 
-    NOW = datetime.datetime(2026, 8, 25, 12, 0).timestamp()
+    NOW = time.time()
 
-    def _slot(self, root, game, sender, age_h):
+    def _slot(self, root, game, sender, age_min=5, meta=None):
         p = root / game / f"{sender}.zmsv"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"img")
-        t = self.NOW - age_h * 3600
+        if meta is not None:
+            p.with_suffix(".json").write_text(json.dumps(meta))
+        t = self.NOW - age_min * 60
         os.utime(p, (t, t))
         return p
 
-    def test_counts_dedup_and_windows(self):
+    def test_counts_dedup_and_recency(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            a, b, c, dd = "aa" * 16, "bb" * 16, "cc" * 16, "dd" * 16
-            self._slot(root, "zork1", a, age_h=2)            # today
-            self._slot(root, "zork1", b, age_h=24)           # this week, not today (Mon 12:00)
-            self._slot(root, "zork1", dd, age_h=40 * 24)     # all-time only (July)
-            self._slot(root, "planetfall", a, age_h=72)      # this month, not this week (Sat)
-            self._slot(root, "planetfall", c, age_h=10 * 24)  # this month
-            st = player_stats(root, now=self.NOW)
-            self.assertEqual(st.per_game, {"zork1": (1, 2, 2),
-                                           "planetfall": (0, 0, 2)})
-            self.assertEqual(st.total, 4)  # a dedupes across games
+            a, b, c = "aa" * 16, "bb" * 16, "cc" * 16
+            self._slot(root, "zork1", a, meta={"turns": 40, "won": True})
+            self._slot(root, "zork1", b, age_min=30, meta={"turns": 2})
+            self._slot(root, "zork1", c, age_min=90)  # no metadata at all
+            self._slot(root, "planetfall", a, age_min=15,
+                       meta={"turns": 7, "won": True})
+            st = player_stats(root)
+            # st_mtime is nanosecond-rounded by the kernel, so the recency
+            # timestamp gets a delta, never an ==  comparison
+            z = st.per_game["zork1"]
+            self.assertEqual((z.explorers, z.won, z.turns), (3, 1, 42))
+            self.assertAlmostEqual(z.last_move, self.NOW - 5 * 60, delta=1)
+            pf = st.per_game["planetfall"]
+            self.assertEqual((pf.explorers, pf.won, pf.turns), (1, 1, 7))
+            self.assertAlmostEqual(pf.last_move, self.NOW - 15 * 60, delta=1)
+            self.assertEqual(st.total, 3)      # a dedupes across games
+            self.assertEqual((st.turns, st.won), (49, 2))
+
+    def test_unparseable_metadata_reads_as_absent(self):
+        """A stray/truncated/hand-edited sidecar must never fail a render
+        or zero out the rest of the tree."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._slot(root, "zork1", "aa" * 16).with_suffix(".json") \
+                .write_text("{not json")
+            self._slot(root, "zork1", "bb" * 16, meta={"turns": "many"})
+            self._slot(root, "zork1", "cc" * 16, meta=[1, 2])  # not an object
+            st = player_stats(root)
+            g = st.per_game["zork1"]
+            self.assertEqual((g.explorers, g.won, g.turns), (3, 0, 0))
+
+    def test_pruning_is_reflected(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            p = self._slot(root, "zork1", "aa" * 16, meta={"turns": 9,
+                                                           "won": True})
+            self.assertEqual((player_stats(root).turns,
+                              player_stats(root).won), (9, 1))
+            p.unlink()   # operator prunes a player
+            self.assertEqual((player_stats(root).per_game,
+                              player_stats(root).turns), ({}, 0))
 
     def test_empty_or_missing_dir(self):
         with tempfile.TemporaryDirectory() as d:
-            st = player_stats(Path(d) / "nope", now=self.NOW)
-            self.assertEqual((st.per_game, st.total), ({}, 0))
+            st = player_stats(Path(d) / "nope")
+            self.assertEqual((st.per_game, st.total, st.turns, st.won),
+                             ({}, 0, 0, 0))
+
+    def test_ago_resolution(self):
+        n = 1_000_000.0
+        for age, want in [(10, "just now"), (89, "just now"),
+                          (91, "1 min ago"), (630, "10 min ago"),
+                          (3599, "59 min ago"), (3700, "1 h ago"),
+                          (86400 * 25, "25 d ago")]:
+            self.assertEqual(_ago(n - age, now=n), want, f"age={age}")
+
+    def test_counters_survive_a_host_restart(self):
+        """GameState lives in memory; the sidecar is the durable copy, so a
+        player's move count and win flag continue where they left off (the
+        test_3_reconnect pattern one level down)."""
+        p = P()
+        try:
+            p.call(text="look")          # first contact + 1 turn
+            p.call(text="inventory")
+            self.assertEqual(p.store.load_meta(p.game, S1),
+                             {"turns": 2, "won": False})
+            p.sessions.clear()           # host restart
+            p.call(text="")              # re-fetch only: not a turn
+            self.assertEqual(p.store.load_meta(p.game, S1),
+                             {"turns": 2, "won": False})
+            p.call(text="look")
+            self.assertEqual(p.store.load_meta(p.game, S1),
+                             {"turns": 3, "won": False})
+        finally:
+            p.close()
+
+    def test_win_latches_and_only_fed_turns_count(self):
+        """quit/y reaches the story's end -> the win flag latches (the only
+        evidence, since the Z-machine's done flag is not in the save image),
+        and the [Game over] reply adds no move."""
+        p = P()
+        try:
+            p.call(text="look")
+            p.call(text="quit")
+            p.call(text="y")
+            self.assertEqual(p.store.load_meta(p.game, S1),
+                             {"turns": 3, "won": True})
+            self.assertEqual(p.call(text="look"), "[Game over]")
+            self.assertEqual(p.store.load_meta(p.game, S1),
+                             {"turns": 3, "won": True})
+        finally:
+            p.close()
+
+    def test_rejections_add_no_moves(self):
+        p = P()
+        try:
+            p.call(text="look", verified=False)     # rejected sender
+            p.call(text="x" * (INPUT_CAP + 1))      # too long
+            p.call(text="")                          # state re-fetch
+            self.assertNotEqual(p.call(text="look"), "")
+            self.assertEqual(p.store.load_meta(p.game, S1),
+                             {"turns": 1, "won": False})
+        finally:
+            p.close()
 
     def test_render_page_stats(self):
         page = render_page("J", [("zork1", 3, "<ab:cd:ef>")],
-                           PlayerStats({"zork1": (1, 2, 3)}, 12))
-        self.assertIn("12 players all time", page)
+                           PlayerStats({"zork1": GameStats(3, 1, 42, 0.0)},
+                                       12, 42, 1))
+        self.assertIn("42 moves · 12 players all time · 🏆 1 win", page)
         self.assertIn("> zork1 (v3)\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  1 today · 2 this week · 3 this month", page)
+                      "  3 explorers · 🏆 1 finished", page)
+
+    def test_render_page_zero_pieces_omitted(self):
+        """The odometer never shows a 0 it has no reason to show, and a game
+        nobody has started gets no stats line at all."""
+        page = render_page("J", [("zork1", 3, "<ab:cd:ef>"),
+                                 ("yomama", 3, "<be:ef:00>")],
+                           PlayerStats({}, 0, 0, 0))
+        self.assertIn("progress is saved per player automatically.\n"
+                      "0 players all time\n", page)
+        self.assertNotIn("moves", page)
+        self.assertNotIn("🏆", page)
+        self.assertEqual(page.count("explorers"), 0)
 
 
 class Helpers(unittest.TestCase):
@@ -243,29 +347,31 @@ class Helpers(unittest.TestCase):
             self.assertFalse(list(Path(d).rglob("*.tmp")))
 
     def test_render_page(self):
+        lm = time.time() - 630  # "10 min ago", robust to a second of drift
+        stats = PlayerStats({"zork1": GameStats(2, 1, 30, lm),
+                             "planetfall": GameStats(1, 0, 4, lm)}, 2, 34, 1)
         page = render_page("J-Machine Games",
                            [("zork1", 3, "<ab:cd:ef>"),
-                            ("planetfall", 5, "<90:12:34>")],
-                           PlayerStats({"zork1": (1, 2, 2),
-                                        "planetfall": (0, 0, 1)}, 2))
+                            ("planetfall", 5, "<90:12:34>")], stats)
         self.assertTrue(page.startswith(">`!J-Machine Games`!\n>"))
         # the address line is itself the link: label <hex>, url lxmf@<hex>
         self.assertIn("> zork1 (v3)\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  1 today · 2 this week · 2 this month", page)
+                      "  2 explorers · last move 10 min ago · 🏆 1 finished",
+                      page)
+        # a game nobody has finished omits that piece (the odometer never
+        # leads with a zero), and singular/plural stays honest
         self.assertIn("> planetfall (v5)\n  `[<90:12:34>`lxmf@901234]\n"
-                      "  0 today · 0 this week · 1 this month", page)
-        self.assertIn("2 players all time", page)
+                      "  1 explorer · last move 10 min ago\n", page)
+        self.assertIn("34 moves · 2 players all time · 🏆 1 win", page)
         # manual line: only for games in the manuals mapping, in the
         # canonical micron form `[label`<hash>:/file/<name>] (NomadNet
         # Guide), and the url must survive parse_page's regexes untouched
         paged = render_page("J-Machine Games",
                             [("zork1", 3, "<ab:cd:ef>"),
-                             ("planetfall", 5, "<90:12:34>")],
-                            PlayerStats({"zork1": (1, 2, 2),
-                                         "planetfall": (0, 0, 1)}, 2),
+                             ("planetfall", 5, "<90:12:34>")], stats,
                             manuals={"zork1": "ab:/file/zork1.pdf"})
         self.assertIn("> zork1 (v3)\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  1 today · 2 this week · 2 this month\n"
+                      "  2 explorers · last move 10 min ago · 🏆 1 finished\n"
                       "  `[manual`ab:/file/zork1.pdf]", paged)
         self.assertNotIn("`[manual`", paged.split("> planetfall")[1])
         # parse_page round-trips the address out of the link label (the real
@@ -280,7 +386,7 @@ class Helpers(unittest.TestCase):
         # delimiters-free 32-char hash
         full = render_page("J", [("zork1", 3,
                                   "<ab:cd:12:34:56:78:9a:bc:de:f0:11:22:33:44:55:66>")],
-                           PlayerStats({}, 0))
+                           PlayerStats({}, 0, 0, 0))
         self.assertIn("`[<ab:cd:12:34:56:78:9a:bc:de:f0:11:22:33:44:55:66>`"
                       "lxmf@abcd123456789abcdef0112233445566]", full)
         # footer: https:// link to the Android mapper (meshchat opens it in

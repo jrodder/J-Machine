@@ -11,14 +11,15 @@ the only case where the transcript restarts (restored batch = prompt +
 status line; the phone's message history keeps the rest, spec §5).
 """
 import dataclasses
-import datetime
+import json
 import os
 import sys
 import time
 import uuid
 from pathlib import Path
 
-from zmach.events import Error, SaveFileError, StoryFileError, Text
+from zmach.events import (EndOfGame, Error, SaveFileError, StoryFileError,
+                          Text)
 from zmach.session import Session
 
 INPUT_CAP = 200  # trust boundary: player lines are short (spec §4)
@@ -40,6 +41,15 @@ class SaveStore:
 
     def save(self, game, sender, image):  # -> None
         raise NotImplementedError
+
+    # Slot metadata (the page's move count + win flag, spec §6). A store
+    # that keeps no metadata reports none and the page omits those pieces,
+    # so the test/side fakes need not implement these.
+    def load_meta(self, game, sender):        # -> dict
+        return {}
+
+    def save_meta(self, game, sender, meta):  # -> None
+        pass
 
 
 class FileSaveStore(SaveStore):
@@ -63,6 +73,23 @@ class FileSaveStore(SaveStore):
         tmp.write_bytes(image)
         os.replace(tmp, p)
 
+    def _meta_path(self, game, sender):
+        # sibling of the slot, deliberately NOT inside the image (ZMSAVE v1
+        # stays opaque, spec §7): the slots stay the registry, so pruning a
+        # .zmsv retires that player's counters too (player_stats only reads
+        # the sibling of a slot it found)
+        return self.root / game / f"{sender}.json"
+
+    def load_meta(self, game, sender):
+        return _read_meta_json(self._meta_path(game, sender))
+
+    def save_meta(self, game, sender, meta):
+        p = self._meta_path(game, sender)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(meta))
+        os.replace(tmp, p)
+
 
 @dataclasses.dataclass
 class GameState:
@@ -74,6 +101,45 @@ class GameState:
     # after the restore turn) — an autosave in between would clobber the
     # mid-turn image the story's @restore is meant to reload
     save_pending: bool = False
+    # page odometer pieces (spec §6), restored from the slot's metadata at
+    # session start so a host restart does not reset a player's history
+    turns: int = 0
+    won: bool = False
+
+
+def _read_meta_json(path):
+    """Slot metadata: absent, unreadable or non-object -> {} (the page
+    omits those pieces; a stray or half-written file never fails a render,
+    and a game never fails to load because of one). Atomic writes (temp +
+    os.replace) are why a half-written file is not an expected case."""
+    try:
+        m = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    return m if isinstance(m, dict) else {}
+
+
+def _count(v):
+    """Tolerant counter read: this is our own metadata, but a hand-edited
+    file must not take down a page render or a player's game."""
+    try:
+        return max(0, int(v))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _ago(ts, now=None):
+    """Relative time for the page's 'last move' piece — micron has no date
+    formatting, and a 5-minute-resolution clock is the whole point of a
+    LoRa-paced game. now injectable so tests need no clock fiddling."""
+    s = (time.time() if now is None else now) - ts
+    if s < 90:
+        return "just now"
+    if s < 3600:
+        return f"{int(s // 60)} min ago"
+    if s < 86400 * 2:
+        return f"{int(s // 3600)} h ago"
+    return f"{int(s // 86400)} d ago"
 
 
 def _render(events):
@@ -127,8 +193,20 @@ def handle_message(game, sender, text, verified, sessions, store,
         return st.transcript
     if len(text) > INPUT_CAP:
         return "[Input rejected: line too long (>200)]"
-    delta = _render(st.session.input(text))
+    events = st.session.input(text)
+    delta = _render(events)
     st.transcript += delta  # kept for the empty-message state re-fetch
+    # Page odometer (spec §6): only a turn actually fed counts (rejections,
+    # [Game over] and state re-fetches returned above). The win flag latches
+    # here because the Z-machine's done flag is host-side (zmach/vm.py) and
+    # is not part of the save image — this turn's EndOfGame is the only
+    # evidence a run ever ended. Metadata is its own small file, so the
+    # save_pending hold (which protects the mid-turn ZMSAVE image) does not
+    # apply: the counters advance even when the autosave holds.
+    st.turns += 1
+    if not st.won and any(isinstance(e, EndOfGame) for e in events):
+        st.won = True
+    store.save_meta(game, sender, {"turns": st.turns, "won": st.won})
     if not st.save_pending:
         _autosave(store, game, sender, st.session)
     # first contact: the batch + this turn are all new -> send both.
@@ -142,6 +220,8 @@ def _new_game(game, sender, story_path, store, seed):
     start (spec §4/§5)."""
     s = Session()
     st = GameState(s, "")
+    m = store.load_meta(game, sender)
+    st.turns, st.won = _count(m.get("turns")), bool(m.get("won"))
     _install_handlers(s, st, store, game, sender)
     batch = s.load(str(story_path), seed=seed)
     img = store.load(game, sender)
@@ -199,10 +279,12 @@ def _autosave(store, game, sender, s):
 def render_page(name, games, stats, manuals=None):
     """Micron page text (spec §6). games = [(stem, version, addr_str)];
     addr_str = pretty hexrep of the game's lxmf.delivery destination hash.
-    stats = player_stats(...) — per-game today/week/month + the all-time
-    player bar (spec §6). The stats lines are plain indented text that
-    parse_page's regexes ignore (verified by the network suite's live
-    browse+parse). manuals = {stem: url} — a game with a manual gets a
+    stats = player_stats(...) — cumulative counts + last-move recency: one
+    odometer bar under the title, one stats line per game (spec §6). Only
+    pieces worth saying are rendered (a 0-count piece is omitted, so a
+    number never appears, vanish and reappear lower). The stats lines are
+    plain indented text that parse_page's regexes ignore (verified by the
+    network suite's live browse+parse). manuals = {stem: url} — a game with a manual gets a
     micron file link line under its block: `[manual`<hash>:/file/<stem>.pdf]
     (NomadNet Guide micron spec: links are backtick-delimited `[label`url]`,
     not markdown [label](url); files are served under the /file path). url
@@ -220,12 +302,22 @@ def render_page(name, games, stats, manuals=None):
     # display_name = app_data.decode), so the page is the only place the
     # name can carry styling. Bold via `!NAME`! (verified against the
     # reference + meshchat MicronParser formatting-mode handling).
+    # Odometer bar: what only ever accumulates (moves fed, players seen,
+    # runs finished) rather than a window that reads empty most of the day.
+    # The players piece always shows (a new node's honest 0); the other two
+    # appear once they are non-zero.
+    bar = []
+    if stats.turns:
+        bar.append(f"{stats.turns} {plural(stats.turns, 'move', 'moves')}")
+    bar.append(f"{stats.total} {plural(stats.total, 'player', 'players')} "
+               f"all time")
+    if stats.won:
+        bar.append(f"🏆 {stats.won} {plural(stats.won, 'win', 'wins')}")
     lines = [">`!" + name + "`!", ">",
              "One-line Z-machine games over Reticulum.",
              "Send any message to a game's address to play;",
              "progress is saved per player automatically.",
-             f"{stats.total} {plural(stats.total, 'player', 'players')} "
-             f"all time",
+             " · ".join(bar),
              ">", ">Games"]
     for stem, version, addr in games:
         lines.append(f"> {stem} (v{version})")
@@ -236,8 +328,16 @@ def render_page(name, games, stats, manuals=None):
         # no delimiters).
         lines.append("  `[" + addr + "`lxmf@"
                      + addr.strip("<>").replace(":", "").lower() + "]")
-        t, w, m = stats.per_game.get(stem, (0, 0, 0))
-        lines.append(f"  {t} today · {w} this week · {m} this month")
+        g = stats.per_game.get(stem)
+        if g:  # no slot for this game -> no stats line at all (nothing true
+               # to say; a fresh host does not advertise 0s per game)
+            parts = [f"{g.explorers} "
+                     + plural(g.explorers, "explorer", "explorers")]
+            if g.last_move:
+                parts.append(f"last move {_ago(g.last_move)}")
+            if g.won:
+                parts.append(f"🏆 {g.won} finished")
+            lines.append("  " + " · ".join(parts))
         if manuals and stem in manuals:
             # micron link syntax: leading backtick enters format mode, then
             # `[label`url] (verified: NomadNet Guide.py + reference
@@ -253,36 +353,45 @@ def render_page(name, games, stats, manuals=None):
 
 
 @dataclasses.dataclass
+class GameStats:
+    """One game's numbers, read off the save tree per page request.
+    explorers = players with a slot; won = players whose metadata says a run
+    ended; turns = moves fed for this game; last_move = newest slot mtime
+    (0.0 = never played)."""
+    explorers: int = 0
+    won: int = 0
+    turns: int = 0
+    last_move: float = 0.0
+
+
+@dataclasses.dataclass
 class PlayerStats:
-    per_game: dict  # {game: (today, this week, this month)}
+    per_game: dict  # {game: GameStats}
     total: int      # all-time unique players, all games (one identity, N games = 1)
+    turns: int = 0  # moves fed, all games
+    won: int = 0    # players who finished, all games
 
 
-def player_stats(saves_root, now=None):
-    """Player metrics from the autosave slot files (spec §6 page). The
-    slots ARE the registry: one file per (game, player), rewritten every
-    turn, never deleted (spec §5) — mtime = last turn. per_game[game] =
-    (today, this week, this month): players with a slot mtime since
-    midnight / this Monday / this 1st, host's local clock. total =
-    all-time unique players across all games (one identity, N games = 1).
-    A missing dir is the fresh-host state: zeros. now injectable so
-    tests need no utime for the windows themselves."""
-    now = time.time() if now is None else now
-    d = datetime.datetime.fromtimestamp(now)
-    midnight = d.replace(hour=0, minute=0, second=0, microsecond=0)
-    starts = (midnight,
-              midnight - datetime.timedelta(days=d.weekday()),
-              midnight.replace(day=1))
+def player_stats(saves_root):
+    """Player metrics from the autosave slot tree (spec §6 page). The slots
+    ARE the registry (spec §5): one file per (game, player), rewritten every
+    turn, never deleted — so slot count = players who ever started a game and
+    mtime = that player's last turn. Each slot's sibling <sender>.json adds
+    the move count and the win flag. The page reports what is on disk: prune
+    the tree and every number follows it, no separate ledger to reconcile.
+    A missing dir is the fresh-host state: no per-game entries, zeros."""
     per_game, identities = {}, set()
     for p in sorted(Path(saves_root).glob("*/*.zmsv")):
-        mt = p.stat().st_mtime
+        m = _read_meta_json(p.with_suffix(".json"))
+        g = per_game.setdefault(p.parent.name, GameStats())
+        g.explorers += 1
+        g.turns += _count(m.get("turns"))
+        g.won += 1 if m.get("won") else 0
+        g.last_move = max(g.last_move, p.stat().st_mtime)
         identities.add(p.stem)
-        t, w, m = per_game.get(p.parent.name, (0, 0, 0))
-        if mt >= starts[0].timestamp(): t += 1
-        if mt >= starts[1].timestamp(): w += 1
-        if mt >= starts[2].timestamp(): m += 1
-        per_game[p.parent.name] = (t, w, m)
-    return PlayerStats(per_game, len(identities))
+    return PlayerStats(per_game, len(identities),
+                       sum(g.turns for g in per_game.values()),
+                       sum(g.won for g in per_game.values()))
 
 
 def write_rns_config(config_dir, role, port=4242, instance_name=None,

@@ -361,30 +361,63 @@ disk files — the host already knows its games and addresses):
 One-line Z-machine games over Reticulum.
 Send any message to a game's address to play;
 progress is saved per player automatically.
-4 players all time
+7 moves · 4 players all time · 🏆 1 win
 >
 >Games
 > Zork I (v5)
   <ab:cd:12:...:ef>        # prettyhexrep of the game's lxmf.delivery hash
-  1 today · 4 this week · 5 this month
+  2 explorers · last move 6 min ago · 🏆 1 finished
 > Planetfall (v5)
   <90:12:...:34>
-  0 today · 0 this week · 1 this month
+  1 explorer · last move 2 h ago
 ```
 
-**Player stats on the page (2026-08-25):** the per-game line is today /
-this week / this month — players with a slot mtime since midnight, this
-Monday, and this 1st (host's local clock); the overall bar is the
-all-time unique player count across all games (one identity playing two
-games counts once). Everything derives from the autosave slot files
-(spec §5) — one slot per (game, player), rewritten every turn, never
-deleted — mtime = last turn; no separate counters exist and nothing new
-to maintain. "Playing right now" is deliberately not reported: the
-protocol is stateless fire-and-forget with no session start/stop, so an
-exact online count would be a guess. A host with no players renders
-zeros. The stats lines are plain 2-space-indented text; `parse_page`'s
-regexes ignore them (the network suite's live browse+parse is the
-regression gate).
+**Player stats on the page (2026-10-20, replaces the 2026-08-25 windowing):**
+the numbers are cumulative plus relative recency, not calendar windows. The
+overall bar is `moves · players all time · 🏆 wins`; the per-game line is
+`explorers · last move X ago · 🏆 n finished`, with any zero-count piece
+omitted (a game nobody has started gets no stats line, so the page never
+advertises a 0 it has no reason to show, and a number can never appear,
+vanish and reappear lower). The earlier `today / this week / this month`
+line — players with a slot mtime since midnight, this Monday, this 1st —
+was dropped because it read `0 today · 0 this week` most of the day: the
+page's job is to look worth joining, and a mesh node is quiet most hours.
+
+What is derivable from the autosave slot tree (spec §5 — one slot per
+(game, player), rewritten every turn, never deleted) stays derived, not
+tracked: **explorers** = slot count, **players all time** = distinct slot
+senders across games (one identity playing two games counts once), **last
+move** = newest slot mtime. What is *not* derivable — moves fed, and who
+reached a story's end — gets one small sidecar per player next to its slot,
+`data/saves/<game>/<sender>.json` = `{"turns": 812, "won": true}`, written
+with the same temp + `os.replace` atomicity as the slot and never inside the
+image (`ZMSAVE v1` stays opaque, spec §7). The counters count only turns
+actually fed: an unverified sender, an over-long line, a `[Game over]`
+reply and the empty-message state re-fetch all return before any counting.
+The win flag latches on the turn that emits `EndOfGame`, because the story's
+end is otherwise unrecordable: the VM's `done` flag is host-side state and is
+not part of the save image, so restoring a finished player's image reports
+`done == False`. For the same reason the move total cannot be reconstructed
+retroactively — the slot is overwritten every turn, and file birth time does
+not help because `os.replace` makes a new inode per write (verified: birth
+and mtime differ by 2 ms, the same write). LXMF's own stores do not cover it
+either: `node_stats` holds propagation counters
+(`client_propagation_messages_*`) and `local_deliveries` is a pruned rolling
+dedup cache, not a history. So moves and wins begin counting at this deploy;
+players' pre-existing wins are not backfillable.
+
+The page reports **what is on disk**: `player_stats` reads the slots that
+exist and each one's sidecar, so pruning the tree takes the numbers with it.
+There is deliberately no separate cumulative ledger — no monotonicity
+requirement, nothing to reconcile against the saves.
+
+"Playing right now" is still not reported: the protocol is stateless
+fire-and-forget with no session start/stop, so an exact online count would be
+a guess (a slot-mtime window would report an idle-but-open player as active
+for the whole window). A host with no players renders `0 players all time`
+and no other pieces. The stats lines are plain 2-space-indented text;
+`parse_page`'s regexes ignore them (the network suite's live browse+parse is
+the regression gate).
 
 Addresses are printed as plain `prettyhexrep` hashes (RNS's own `<ab:cd:...>` form)
 — trivially parseable by a regex and rendered by every browser; `rns:`-link markup
