@@ -107,6 +107,23 @@ every turn (held while an in-game `save` image is pending, rewritten by the
 disappears for days reconnects to exactly where they left off.
 In-game `save`/`restore` verbs map to that slot with no prompt.
 
+### Guestbook (operator)
+
+One board for the whole server at `<page-hash>:/page/guestbook.mu`, linked from
+the page. Both files are plain and read per request, so moderating needs no
+restart:
+
+- `data/guestbook.jsonl` — the log (`{"ts", "who", "text"}` per line, newest
+  last, trimmed to 200). Delete a line to drop an entry.
+- `data/guestbook-banned.txt` — denylist, one destination hash per line, `#`
+  comments allowed. Only useful against players who identified to the node:
+  RNS reveals an identity only when the client asks to be identified, so most
+  visitors post anonymously (labelled `anon`, throttled to one line per minute
+  server-wide; identified players get a 6-hex tag and one per 10 minutes).
+
+To try a post from a terminal: `python3 -m jclient browse <page-hash> --path
+/page/guestbook.mu --field message="hello"`.
+
 ### Verify
 
 `python3 scripts/run_done.py` — Phase 1 gates + the Phase 2 network gate

@@ -293,6 +293,58 @@ class Network(unittest.TestCase):
             finally:
                 stop_host(h)
 
+    def test_7_guestbook_post(self):
+        """spec §6 guestbook: a micron form submit — request_data["field_
+        message"], the key both NomadNet (Browser.py:425-440) and meshchat
+        (meshchat.py:2198-2212) send — posts over the wire and comes back on
+        the board micron-escaped and on one line. This client does NOT call
+        Link.identify(), exactly like NomadNet by default (Directory.py:377-
+        382) and meshchat without its explicit identify action, so it also
+        proves the anonymous tier, which is the normal visitor."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            h, dests = start_host(d, ["zork1.z3"], 4347)
+            try:
+                work = d / "c7"
+                page_hex = dests["page"].strip("<>").replace(":", "").lower()
+                base = [sys.executable, "-u", "-m", "jclient", "browse",
+                        dests["page"], "--data-dir", str(work),
+                        "--identity", str(work / "identity"),
+                        "--port", "4347"]
+                # index links the board, and the link does not read as a game
+                rc, out, _ = netrig.run_captured(base, "browse", work,
+                                                 timeout=180)
+                self.assertEqual(rc, 0, out + "\n" + netrig.logs_tail(work))
+                self.assertIn("`[Guestbook`" + page_hex
+                              + ":/page/guestbook.mu]", out)
+                self.assertEqual([n for n, _ in parse_page(out)], ["zork1"])
+                # post: backticks and a newline in the payload must come back
+                # escaped and collapsed, or user text could restyle the page
+                rc2, out2, _ = netrig.run_captured(
+                    base + ["--path", "/page/guestbook.mu", "--field",
+                            "message=first line`!`\nthen [x](y)"],
+                    "post", work, timeout=180)
+                self.assertEqual(rc2, 0, out2 + "\n" + netrig.logs_tail(work))
+                self.assertIn("signed — thanks", out2)
+                self.assertIn("anon · just now\n"
+                              "  first line\\`!\\` then [x](y)", out2)
+                log = d / "host" / "guestbook.jsonl"
+                self.assertEqual(len(log.read_text().splitlines()), 1)
+                self.assertIsNone(json.loads(log.read_text())["who"])
+                # a second submit inside the anonymous window is refused and
+                # never written (nothing is stored before the checks pass)
+                rc3, out3, _ = netrig.run_captured(
+                    base + ["--path", "/page/guestbook.mu",
+                            "--field", "message=too fast"], "post2", work,
+                    timeout=180)
+                self.assertEqual(rc3, 0, out3 + "\n" + netrig.logs_tail(work))
+                self.assertIn("one line per 60 seconds", out3)
+                self.assertNotIn("too fast", out3)  # rejected text is never
+                                                    # echoed, let alone stored
+                self.assertEqual(len(log.read_text().splitlines()), 1)
+            finally:
+                stop_host(h)
+
 
 @unittest.skipUnless(HAVE_RNS, "rns/lxmf not installed (pip install rns lxmf)")
 class AnnounceInterval(unittest.TestCase):

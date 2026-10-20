@@ -438,6 +438,55 @@ follows it: a name only counts when the next line is a 2-space address link
 read as a game). `parse_page` returns `(name, addr)` pairs — the version was
 discarded by its only consumer (`jclient browse` prints name + address).
 
+**Guestbook (2026-10-20):** the page destination serves one more path,
+`/page/guestbook.mu` — **one board for the whole server, never per game** —
+and the index links it with a single line above the footer
+(`🖊️ `[Guestbook`<page-hash>:/page/guestbook.mu]`). Players post through a
+native micron field; the host code is `jhost/guestbook.py` (pure, no RNS
+import) with the RNS glue in `host.py`.
+
+*Mechanism, verified in source rather than assumed:* a micron link's third
+backtick component lists the fields to submit (`*` = all of them) and the
+client posts them to that link's path as `request_data["field_<name>"]` —
+NomadNet `ui/textui/Browser.py:425-440`, meshchat `meshchat.py:2198-2212`
+prefix identically. So one handler on the existing page destination sees both
+the view (no payload) and the post (`field_message`): no new identity, no new
+announce against the ~1/hour rate budget. The field is single-line
+(`` `<48|message`> ``) because meshchat does not implement multiline inputs.
+
+*Authorship is a bonus, never a requirement.* RNS reveals a requester only if
+the client calls `Link.identify()` (`RNS/Link.py:454-469`; the responder adopts
+it on `LINKIDENTIFY` at `Link.py:971-987`, passed to handlers at `:829`), and
+neither mainstream client does that unprompted: NomadNet identifies only for
+nodes the user toggled — `False` by default (`Directory.py:377-382`) — and
+meshchat makes it a separate explicit action (`meshchat.py:1877-1884`). A
+"must be identified" rule would therefore be a board nobody can sign, so
+anonymous is the normal path: identified posts get a 6-hex tag of the
+destination hash plus one per 10 min; anonymous posts are labelled `anon` and
+share one line per 60 s server-wide (there is no author to key on). Minting an
+identity is free, so no per-author rule stops a determined spammer; the limits
+exist to keep the board and the log usable.
+
+*User text is escaped, always:* one line (CR/LF collapsed) and backticks
+backslash-escaped — backtick is micron's only escape/format character, so that
+single escape is what stops a message restyling the page or forging a link.
+The Reticulum community template learned this the hard way (commit "fix micron
+styling in user input breaking pages") and RNS's own generator escapes the same
+way (`RNS/Utilities/rngit/highlight.py:209`). Rejected text is never echoed.
+
+*Storage and moderation are files under `data/`, read per request:* the log is
+`data/guestbook.jsonl` (append one short line, atomic at that size, trimmed to
+the last 200 records) and the denylist is `data/guestbook-banned.txt` (one
+destination hash per line, `#` comments). Deleting an abusive line needs no
+restart; nothing about the board is cached in the host.
+
+*Gate:* `tests/test_guestbook.py` (pure: caps, collapsing, escaping, both rate
+tiers, ban file, tail order, trim) plus network test 7, which posts a payload
+containing backticks and a newline over a real link and asserts the board
+returns it escaped and collapsed, labelled `anon` (this client does not
+identify, like every default client), writes exactly one record, and refuses a
+second submit inside the anonymous window without storing it.
+
 ## 7. Testing and done bar
 
 **Layering:** all protocol logic lives in `jhost/protocol.py` as pure functions

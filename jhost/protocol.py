@@ -128,10 +128,11 @@ def _count(v):
         return 0
 
 
-def _ago(ts, now=None):
-    """Relative time for the page's 'last move' piece — micron has no date
-    formatting, and a 5-minute-resolution clock is the whole point of a
-    LoRa-paced game. now injectable so tests need no clock fiddling."""
+def ago(ts, now=None):
+    """Relative time for the page's 'last move' and guestbook pieces —
+    micron has no date formatting, and a 5-minute-resolution clock is the
+    whole point of a LoRa-paced game. now injectable so tests need no clock
+    fiddling."""
     s = (time.time() if now is None else now) - ts
     if s < 90:
         return "just now"
@@ -276,7 +277,7 @@ def _autosave(store, game, sender, s):
               file=sys.stderr)
 
 
-def render_page(name, games, stats, manuals=None):
+def render_page(name, games, stats, manuals=None, guestbook=None):
     """Micron page text (spec §6). games = [(stem, addr_str)];
     addr_str = pretty hexrep of the game's lxmf.delivery destination hash.
     stats = player_stats(...) — cumulative counts + last-move recency: one
@@ -292,6 +293,8 @@ def render_page(name, games, stats, manuals=None):
     neither the '> name' nor the '<hex>' pattern matches it. The game's
     address line is itself a clickable link: label = prettyhexrep <xx:..:xx>,
     url = lxmf@<32-hex-hash> (meshchat/Sideband open a conversation).
+    guestbook = the page-destination URL of the guestbook board; when given,
+    one link line to it is added above the footer.
     The page footer links the Android mapper (Droid-Mapper): a plain
     https:// link target — meshchat's onNodePageUrlClick opens http(s)
     targets in a new browser tab (NomadNetworkPage.vue, verified)."""
@@ -337,7 +340,7 @@ def render_page(name, games, stats, manuals=None):
             parts = [f"{g.explorers} "
                      + plural(g.explorers, "explorer", "explorers")]
             if g.last_move:
-                parts.append(f"last move {_ago(g.last_move)}")
+                parts.append(f"last move {ago(g.last_move)}")
             if g.won:
                 parts.append(f"🏆 {g.won} finished")
             lines.append("  " + " · ".join(parts))
@@ -348,6 +351,11 @@ def render_page(name, games, stats, manuals=None):
             # not an f-string: a literal '[' plus a subscript expression
             # trips PEP 701 bracket matching in CPython 3.14 (SyntaxError)
             lines.append("  `[manual`" + manuals[stem] + "]")
+    if guestbook:
+        # one line, and it cannot be read as a game: parse_page's name anchor
+        # needs '> word' and its address line needs an indented
+        # [label`lxmf@…] link, neither of which this is
+        lines.append("🖊️ `[Guestbook`" + guestbook + "]")
     # footer link (plain string, not an f-string — see the PEP 701 note
     # above): meshchat opens https:// link targets in a new browser tab
     lines.append(">")

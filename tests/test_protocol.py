@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from jhost.protocol import (FileSaveStore, GameStats, INPUT_CAP, PlayerStats,
-                            _ago, handle_message, player_stats, render_page,
+                            ago, handle_message, player_stats, render_page,
                             write_rns_config)
 from tests.conformance.run_conformance import play_session_lines
 from tests.util import norm
@@ -265,7 +265,7 @@ class PlayerStatsTests(unittest.TestCase):
                           (91, "1 min ago"), (630, "10 min ago"),
                           (3599, "59 min ago"), (3700, "1 h ago"),
                           (86400 * 25, "25 d ago")]:
-            self.assertEqual(_ago(n - age, now=n), want, f"age={age}")
+            self.assertEqual(ago(n - age, now=n), want, f"age={age}")
 
     def test_counters_survive_a_host_restart(self):
         """GameState lives in memory; the sidecar is the durable copy, so a
@@ -369,11 +369,14 @@ class Helpers(unittest.TestCase):
         paged = render_page("J-Machine Games",
                             [("zork1", "<ab:cd:ef>"),
                              ("planetfall", "<90:12:34>")], stats,
-                            manuals={"zork1": "ab:/file/zork1.pdf"})
+                            manuals={"zork1": "ab:/file/zork1.pdf"},
+                            guestbook="abcd:/page/guestbook.mu")
         self.assertIn("> zork1\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
                       "  2 explorers · last move 10 min ago · 🏆 1 finished\n"
                       "  `[manual`ab:/file/zork1.pdf]", paged)
         self.assertNotIn("`[manual`", paged.split("> planetfall")[1])
+        # guestbook link line, and it must not be readable as a game
+        self.assertIn("🖊️ `[Guestbook`abcd:/page/guestbook.mu]", paged)
         # parse_page round-trips the address out of the link label (the real
         # parse_page is exercised over the wire in the network suite)
         import re

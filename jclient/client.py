@@ -69,8 +69,11 @@ class Client:
         raise RuntimeError(f"cannot recall {what} after {timeout}s "
                            f"(was it announced? check host logs)")
 
-    def request(self, dest, path, timeout=30, max_response_size=65536):
+    def request(self, dest, path, timeout=30, max_response_size=65536,
+                data=None):
         """RNS request/response (page fetch). Returns the response bytes.
+        `data` is the request payload the handler receives (a dict for a
+        micron form submit; None sends the empty payload a plain fetch uses).
         A Link establishes asynchronously (verified+encrypted handshake);
         request() needs the link ACTIVE (mdu is set on establishment,
         site-packages/RNS/Link.py) — wait for that first.
@@ -94,7 +97,7 @@ class Client:
             if hasattr(data, "read"):
                 data = data.read()
             got.append(data)
-        link.request(path, b"",
+        link.request(path, b"" if data is None else data,
                      _recv,
                      None, None, timeout=timeout,
                      max_response_size=max_response_size)

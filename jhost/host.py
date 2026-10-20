@@ -14,6 +14,7 @@ from pathlib import Path
 import RNS
 from LXMF import LXMessage, LXMRouter
 
+from . import guestbook
 from .protocol import (DEST_JSON, FileSaveStore, handle_message,
                        player_stats, render_page, write_rns_config)
 
@@ -47,6 +48,10 @@ class Host:
         self.destinations = {}        # stem -> delivery Destination
         self.stories = {}             # stem -> story Path
         self.manuals = {}             # stem -> games/<stem>.pdf Path
+        # guestbook log + operator denylist (spec §6): plain files under
+        # data/, read per request, so pruning/moderating needs no restart
+        self.gb_log = self.data_dir / "guestbook.jsonl"
+        self.gb_ban = self.data_dir / "guestbook-banned.txt"
         self.page_dest = None
 
     # ------------------------------------------------ lifecycle
@@ -66,6 +71,12 @@ class Host:
                                          "nomadnetwork", "node")
         self.page_dest.register_request_handler(
             "/page/index.mu", self._page_handler,
+            allow=RNS.Destination.ALLOW_ALL)
+        # the board is a second path on the SAME page destination: a micron
+        # form submits to its own link's path with the field data attached, so
+        # posting and viewing need no new identity and no extra announce
+        self.page_dest.register_request_handler(
+            "/page/guestbook.mu", self._guest_handler,
             allow=RNS.Destination.ALLOW_ALL)
 
         for story in sorted(self.games_dir.glob("*.z[358]")):
@@ -151,7 +162,27 @@ class Host:
         # micron URL format (NomadNet Guide): <32-hex dest hash>:<path>
         # — rns:// URLs are for terminal tools (rngit/rnsh), not micron
         manuals = {s: f"{page_hex}:/file/{s}.pdf" for s in self.manuals}
-        return render_page(self.name, games, stats, manuals=manuals).encode()
+        return render_page(self.name, games, stats, manuals=manuals,
+                           guestbook=f"{page_hex}:/page/guestbook.mu").encode()
+
+    def _guest_handler(self, path, request_data, request_id,
+                       remote_identity, requested_at):
+        """Guestbook board: view if no field came in, post if one did. A
+        micron submit arrives as request_data["field_message"] (the prefix is
+        what both NomadNet and meshchat send — guestbook.py cites the lines),
+        so one handler serves both. request_data is b"" for a plain fetch, so
+        the dict test is what separates the two."""
+        # 5-param shape required (RNS 1.5.0 inspects the signature)
+        note = None
+        if isinstance(request_data, dict) and "field_message" in request_data:
+            who = (RNS.hexrep(remote_identity.hash, delimit=False)
+                   if remote_identity is not None else None)
+            note = guestbook.post(self.gb_log, self.gb_ban, who,
+                                  request_data.get("field_message"))
+        page_hex = RNS.hexrep(self.page_dest.hash, delimit=False)
+        return guestbook.render(self.name, page_hex,
+                                guestbook.entries(self.gb_log),
+                                note).encode()
 
     def _on_message(self, stem, msg):
         if not msg.signature_validated and \
