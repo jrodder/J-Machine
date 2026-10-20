@@ -361,12 +361,12 @@ disk files — the host already knows its games and addresses):
 Infocom-era text adventures, playable by message.
 Send any message to a game's address to play;
 progress is saved per player automatically.
-7 moves · 4 players all time · 🏆 1 win
+7 moves · 4 players all time · 1 win
 >
 >Games
 > zork1
   <ab:cd:12:...:ef>        # prettyhexrep of the game's lxmf.delivery hash
-  2 explorers · last move 6 min ago · 🏆 1 finished
+  2 explorers · last move 6 min ago · 1 finished
 > planetfall
   <90:12:...:34>
   1 explorer · last move 2 h ago
@@ -374,8 +374,8 @@ progress is saved per player automatically.
 
 **Player stats on the page (2026-10-20, replaces the 2026-08-25 windowing):**
 the numbers are cumulative plus relative recency, not calendar windows. The
-overall bar is `moves · players all time · 🏆 wins`; the per-game line is
-`explorers · last move X ago · 🏆 n finished`, with any zero-count piece
+overall bar is `moves · players all time · wins`; the per-game line is
+`explorers · last move X ago · n finished`, with any zero-count piece
 omitted (a game nobody has started gets no stats line, so the page never
 advertises a 0 it has no reason to show, and a number can never appear,
 vanish and reappear lower). The earlier `today / this week / this month`
@@ -439,38 +439,45 @@ read as a game). `parse_page` returns `(name, addr)` pairs — the version was
 discarded by its only consumer (`jclient browse` prints name + address).
 
 **Guestbook (2026-10-20):** the page destination serves one more path,
-`/page/guestbook.mu` — **one board for the whole server, never per game** —
-and the index links it with a single line above the footer
-(`🖊️ `[Guestbook`<page-hash>:/page/guestbook.mu]`). Players post through a
-native micron field; the host code is `jhost/guestbook.py` (pure, no RNS
-import) with the RNS glue in `host.py`.
+`/page/guestbook.mu` — **one board for the whole server, never per game** — and
+the index links it in its top section, under the odometer bar
+(backtick-delimited: `[Guestbook`<page-hash>:/page/guestbook.mu`). The page is
+read-only; **players post by message**: `sign: <line>` to any game address
+appends the board line and replies to the poster. Host code is
+`jhost/guestbook.py` (pure, no RNS import) with the RNS glue in `host.py`, and
+the verb is intercepted in `protocol.handle_message` before any session work —
+posting never starts a game, spends a turn or moves the odometer.
 
-*Mechanism, verified in source rather than assumed:* a micron link's third
-backtick component lists the fields to submit (`*` = all of them) and the
-client posts them to that link's path as `request_data["field_<name>"]` —
-NomadNet `ui/textui/Browser.py:425-440`, meshchat `meshchat.py:2198-2212`
-prefix identically. So one handler on the existing page destination sees both
-the view (no payload) and the post (`field_message`): no new identity, no new
-announce against the ~1/hour rate budget. The field is single-line
-(`` `<48|message`> ``) because meshchat does not implement multiline inputs.
+*Why the message channel and not a form on the page — verified in source.* A
+page view cannot carry an author: RNS reveals a requester only if the client
+calls `Link.identify()` (`RNS/Link.py:454-469`; the responder adopts it on
+`LINKIDENTIFY` at `:971-987` and passes it to handlers at `:829`), and neither
+mainstream client does that while browsing — NomadNet identifies only for nodes
+whose "Identify when connecting" box the user has ticked, false by default
+(`Directory.py:377-382`, checkbox at `Network.py:747`), and meshchat exposes it
+as an API route that no UI calls (`meshchat.py:1869-1889`). The only other hash
+in reach is the link's own id, a truncated hash of the ephemeral key exchange
+and therefore new every connection (`Link.py:336-346`) — displaying it would
+look like a handle and prove nothing. A message, by contrast, is signed and
+names its source destination, the same value the save slot is named after
+(`host.py`: `sender = msg.source_hash.hex()`), so the tag is real in every
+client with no checkbox, no account and no extra announce against the ~1/hour
+rate budget. A micron form was built and measured first (fields and the
+`*`-submit link do work — NomadNet `Browser.py:425-440`, meshchat
+`meshchat.py:2198-2212` both prefix `field_<name>`) and removed: it could only
+ever have printed `anon`, and meshchat styles the input from the page's micron
+CSS, which rendered as illegible grey-on-white text (`MicronParser.js:276-284`).
 
-*Authorship is a bonus, never a requirement.* RNS reveals a requester only if
-the client calls `Link.identify()` (`RNS/Link.py:454-469`; the responder adopts
-it on `LINKIDENTIFY` at `Link.py:971-987`, passed to handlers at `:829`), and
-neither mainstream client does that unprompted: NomadNet identifies only for
-nodes the user toggled — `False` by default (`Directory.py:377-382`) — and
-meshchat makes it a separate explicit action (`meshchat.py:1877-1884`). A
-"must be identified" rule would therefore be a board nobody can sign, so
-anonymous is the normal path: identified posts get a 6-hex tag of the
-destination hash plus one per 10 min; anonymous posts are labelled `anon` and
-share one line per 60 s server-wide (there is no author to key on). Minting an
-identity is free, so no per-author rule stops a determined spammer; the limits
-exist to keep the board and the log usable.
+*Tag and limits.* A line is marked with the first 6 hex of the poster's
+destination hash (`#6f5223`) — the prefix their own client shows them — and one
+line per 10 minutes per player. Minting an identity is free, so no per-author
+rule stops a determined spammer; these limits exist to keep the board and the
+log usable, and the operator's real tool is deleting a line.
 
-*User text is escaped, always:* one line (CR/LF collapsed) and backticks
+*Posted text is escaped, always:* one line (CR/LF collapsed) and backticks
 backslash-escaped — backtick is micron's only escape/format character, so that
-single escape is what stops a message restyling the page or forging a link.
-The Reticulum community template learned this the hard way (commit "fix micron
+single escape is what stops a message restyling the page or forging a link. The
+Reticulum community template learned this the hard way (commit "fix micron
 styling in user input breaking pages") and RNS's own generator escapes the same
 way (`RNS/Utilities/rngit/highlight.py:209`). Rejected text is never echoed.
 
@@ -480,12 +487,16 @@ the last 200 records) and the denylist is `data/guestbook-banned.txt` (one
 destination hash per line, `#` comments). Deleting an abusive line needs no
 restart; nothing about the board is cached in the host.
 
-*Gate:* `tests/test_guestbook.py` (pure: caps, collapsing, escaping, both rate
-tiers, ban file, tail order, trim) plus network test 7, which posts a payload
-containing backticks and a newline over a real link and asserts the board
-returns it escaped and collapsed, labelled `anon` (this client does not
-identify, like every default client), writes exactly one record, and refuses a
-second submit inside the anonymous window without storing it.
+*Gate:* `tests/test_guestbook.py` (pure: caps, collapsing, escaping, rate limit,
+ban file, tail order, trim, board renders with no games and no form) and
+`tests/test_protocol.py` (the verb is inert when unwired, needs a verified
+signature, and never creates a session), plus network test 7, which posts
+`sign:` over a real LXMF conversation and asserts the reply carries the
+poster's hash prefix, the board shows the line escaped and on one line under
+that tag, and a second line inside the window is refused without being written.
+
+Page and reply copy carries no emoji (2026-10-20): the words carry the meaning,
+and a glyph that repeats a word is noise.
 
 ## 7. Testing and done bar
 

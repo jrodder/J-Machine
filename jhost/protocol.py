@@ -156,7 +156,7 @@ def _render(events):
 
 
 def handle_message(game, sender, text, verified, sessions, store,
-                   story_path, seed=None):
+                   story_path, seed=None, sign=None):
     """One inbound LXMF message -> reply text. Never raises on protocol
     failures: rejection/done/corrupt-save/unavailable-story are replies
     (spec §4).
@@ -173,11 +173,19 @@ def handle_message(game, sender, text, verified, sessions, store,
     sessions  {(game, sender): GameState}, mutated in place
     store     SaveStore
     seed      RNG seed for fresh sessions (dfrotz -s parity in tests)
+    sign      callable(sender, line) -> reply text, called for a message that
+              starts with "sign: " (the guestbook verb, spec §6). Intercepted
+              before any session work, so it neither starts a game nor counts
+              as a turn. None -> the prefix is ordinary game input.
     """
     if not verified:
         return "[Rejected: unverified sender]"
     if text is None:
         text = ""
+    if sign is not None and text[:5].lower() == "sign:":
+        # the board rides the signing channel: LXMF has already proven
+        # `sender`, which a page view never does (guestbook.py cites why)
+        return sign(sender, text[5:].strip())
     key = (game, sender)
     st = sessions.get(key)
     first = st is None
@@ -294,7 +302,7 @@ def render_page(name, games, stats, manuals=None, guestbook=None):
     address line is itself a clickable link: label = prettyhexrep <xx:..:xx>,
     url = lxmf@<32-hex-hash> (meshchat/Sideband open a conversation).
     guestbook = the page-destination URL of the guestbook board; when given,
-    one link line to it is added above the footer.
+    one link line to it sits in the top section, under the odometer bar.
     The page footer links the Android mapper (Droid-Mapper): a plain
     https:// link target — meshchat's onNodePageUrlClick opens http(s)
     targets in a new browser tab (NomadNetworkPage.vue, verified)."""
@@ -315,13 +323,20 @@ def render_page(name, games, stats, manuals=None, guestbook=None):
     bar.append(f"{stats.total} {plural(stats.total, 'player', 'players')} "
                f"all time")
     if stats.won:
-        bar.append(f"🏆 {stats.won} {plural(stats.won, 'win', 'wins')}")
+        bar.append(f"{stats.won} {plural(stats.won, 'win', 'wins')}")
     lines = [">`!" + name + "`!", ">",
              "Infocom-era text adventures, playable by message.",
              "Send any message to a game's address to play;",
              "progress is saved per player automatically.",
              " · ".join(bar),
-             ">", ">Games"]
+             ">"]
+    if guestbook:
+        # one line, in the top section where a visitor sees it before the game
+        # list, and it cannot be read as a game: parse_page's name anchor
+        # needs '> word' and its address line needs an indented
+        # [label`lxmf@…] link, neither of which this is
+        lines.append("`[Guestbook`" + guestbook + "]")
+    lines.append(">Games")
     for stem, addr in games:
         # the bare '> name' line is jclient's parse anchor (spec §7): the
         # Z-machine version suffix used to sit here and added nothing a
@@ -342,7 +357,7 @@ def render_page(name, games, stats, manuals=None, guestbook=None):
             if g.last_move:
                 parts.append(f"last move {ago(g.last_move)}")
             if g.won:
-                parts.append(f"🏆 {g.won} finished")
+                parts.append(f"{g.won} finished")
             lines.append("  " + " · ".join(parts))
         if manuals and stem in manuals:
             # micron link syntax: leading backtick enters format mode, then
@@ -351,15 +366,10 @@ def render_page(name, games, stats, manuals=None, guestbook=None):
             # not an f-string: a literal '[' plus a subscript expression
             # trips PEP 701 bracket matching in CPython 3.14 (SyntaxError)
             lines.append("  `[manual`" + manuals[stem] + "]")
-    if guestbook:
-        # one line, and it cannot be read as a game: parse_page's name anchor
-        # needs '> word' and its address line needs an indented
-        # [label`lxmf@…] link, neither of which this is
-        lines.append("🖊️ `[Guestbook`" + guestbook + "]")
     # footer link (plain string, not an f-string — see the PEP 701 note
     # above): meshchat opens https:// link targets in a new browser tab
     lines.append(">")
-    lines.append("📱 Mapping Helper App for Android: `[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]")
+    lines.append("Mapping Helper App for Android: `[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]")
     return "\n".join(lines) + "\n"
 
 

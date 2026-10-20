@@ -48,20 +48,15 @@ def cmd_scan(a):
 
 
 def cmd_browse(a):
-    """RNS request to a page path (default /page/index.mu); print the page,
-    then extracted 'name <addr>' lines (spec §6). --field NAME=VALUE turns it
-    into a micron form submit (e.g. sign the guestbook): the keys go out
-    prefixed field_<NAME>, exactly as NomadNet and meshchat send them."""
+    """RNS request to a page path (default /page/index.mu; --path
+    /page/guestbook.mu for the board); print the page, then extracted
+    'name <addr>' lines (spec §6)."""
     c = Client(a.data_dir, a.identity, name="jclient", port=a.port)
     page_ident = c.recall(unpretty(a.page_hash), "page node")
     page_dest = RNS.Destination(page_ident, RNS.Destination.OUT,
                                 RNS.Destination.SINGLE, "nomadnetwork",
                                 "node")
-    fields = {}
-    for f in a.field or []:
-        k, _, v = f.partition("=")
-        fields["field_" + k] = v
-    page = c.request(page_dest, a.path, data=fields or None)
+    page = c.request(page_dest, a.path)
     if page is None:
         print("page fetch failed", file=sys.stderr)
         return 1
@@ -148,9 +143,6 @@ if __name__ == "__main__":
         s.add_argument("--port", type=int, default=4242)
     sub.choices["browse"].add_argument("page_hash")
     sub.choices["browse"].add_argument("--path", default="/page/index.mu")
-    sub.choices["browse"].add_argument(
-        "--field", action="append", metavar="NAME=VALUE",
-        help="submit as a micron form field (repeatable); sent field_<NAME>")
     sub.choices["play"].add_argument("game_address")
     s = sub.add_parser("fetch")
     s.add_argument("dest_address")

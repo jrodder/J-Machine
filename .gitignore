@@ -16,3 +16,10 @@ data/
 # scratch Quetzal save games from manual play-testing
 *.qzl
 /restore
+
+# stories + manuals are operator-supplied, never versioned (README)
+games/
+
+# jclient/RNS client state: identities are PRIVATE KEYS, plus routing caches
+.jclient/
+.nomadnet/

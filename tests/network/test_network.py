@@ -293,54 +293,69 @@ class Network(unittest.TestCase):
             finally:
                 stop_host(h)
 
-    def test_7_guestbook_post(self):
-        """spec §6 guestbook: a micron form submit — request_data["field_
-        message"], the key both NomadNet (Browser.py:425-440) and meshchat
-        (meshchat.py:2198-2212) send — posts over the wire and comes back on
-        the board micron-escaped and on one line. This client does NOT call
-        Link.identify(), exactly like NomadNet by default (Directory.py:377-
-        382) and meshchat without its explicit identify action, so it also
-        proves the anonymous tier, which is the normal visitor."""
+    def test_7_guestbook_sign(self):
+        """spec §6 guestbook: "sign: <line>" in a game conversation posts to
+        the server-wide board, tagged with the sender hash the LXMF signature
+        proved. The page itself stays read-only on purpose: a page view carries
+        no author (guestbook.py cites RNS/Link.py, NomadNet Directory.py and
+        meshchat.py for why), so posting rides the signing channel, where every
+        client identifies automatically. Backticks in the payload must come back
+        escaped, or player text could restyle the page or forge a link."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             h, dests = start_host(d, ["zork1.z3"], 4347)
             try:
                 work = d / "c7"
                 page_hex = dests["page"].strip("<>").replace(":", "").lower()
+                zork = dests["games"]["zork1"]
+                zork_hex = zork.strip("<>").replace(":", "").lower()
                 base = [sys.executable, "-u", "-m", "jclient", "browse",
                         dests["page"], "--data-dir", str(work),
                         "--identity", str(work / "identity"),
                         "--port", "4347"]
-                # index links the board, and the link does not read as a game
+                # the index links the board in its top section, and that link
+                # does not read as a game
                 rc, out, _ = netrig.run_captured(base, "browse", work,
                                                  timeout=180)
                 self.assertEqual(rc, 0, out + "\n" + netrig.logs_tail(work))
                 self.assertIn("`[Guestbook`" + page_hex
                               + ":/page/guestbook.mu]", out)
+                self.assertLess(out.index("`[Guestbook`"), out.index("> zork1"))
                 self.assertEqual([n for n, _ in parse_page(out)], ["zork1"])
-                # post: backticks and a newline in the payload must come back
-                # escaped and collapsed, or user text could restyle the page
+                # the board says post-by-message and carries no form at all
                 rc2, out2, _ = netrig.run_captured(
-                    base + ["--path", "/page/guestbook.mu", "--field",
-                            "message=first line`!`\nthen [x](y)"],
-                    "post", work, timeout=180)
-                self.assertEqual(rc2, 0, out2 + "\n" + netrig.logs_tail(work))
-                self.assertIn("signed — thanks", out2)
-                self.assertIn("anon · just now\n"
-                              "  first line\\`!\\` then [x](y)", out2)
-                log = d / "host" / "guestbook.jsonl"
-                self.assertEqual(len(log.read_text().splitlines()), 1)
-                self.assertIsNone(json.loads(log.read_text())["who"])
-                # a second submit inside the anonymous window is refused and
-                # never written (nothing is stored before the checks pass)
-                rc3, out3, _ = netrig.run_captured(
-                    base + ["--path", "/page/guestbook.mu",
-                            "--field", "message=too fast"], "post2", work,
+                    base + ["--path", "/page/guestbook.mu"], "board", work,
                     timeout=180)
+                self.assertEqual(rc2, 0, out2 + "\n" + netrig.logs_tail(work))
+                self.assertIn("send:  sign: your line", out2)
+                self.assertIn("`[zork1`lxmf@" + zork_hex + "]", out2)
+                self.assertNotIn("<48", out2)
+                self.assertIn("No lines yet", out2)
+                # post: the reply confirms with the same 6-char prefix the
+                # poster's own client shows them
+                rc3, out3 = netrig.play_once(
+                    zork, ["sign: first line`!` and [x](y)"], work,
+                    "sign1", timeout=180, port=4347)
                 self.assertEqual(rc3, 0, out3 + "\n" + netrig.logs_tail(work))
-                self.assertIn("one line per 60 seconds", out3)
-                self.assertNotIn("too fast", out3)  # rejected text is never
-                                                    # echoed, let alone stored
+                log = d / "host" / "guestbook.jsonl"
+                rec = json.loads(log.read_text().strip())
+                self.assertEqual(len(rec["who"]), 32)
+                self.assertIn("signed — thanks! #" + rec["who"][:6], out3)
+                # and the line is on the board: tagged, escaped, one line
+                rc4, out4, _ = netrig.run_captured(
+                    base + ["--path", "/page/guestbook.mu"], "board2", work,
+                    timeout=180)
+                self.assertEqual(rc4, 0, out4 + "\n" + netrig.logs_tail(work))
+                self.assertIn("#" + rec["who"][:6] + " · just now\n"
+                              "  first line\\`!\\` and [x](y)", out4)
+                # a second line inside the window is refused: no write, and the
+                # rejected text is never echoed
+                rc5, out5 = netrig.play_once(
+                    zork, ["sign: too soon for a second line"], work,
+                    "sign2", timeout=180, port=4347)
+                self.assertEqual(rc5, 0, out5 + "\n" + netrig.logs_tail(work))
+                self.assertIn("one line per 10 min", out5)
+                self.assertNotIn("too soon", out5)
                 self.assertEqual(len(log.read_text().splitlines()), 1)
             finally:
                 stop_host(h)

@@ -109,20 +109,23 @@ In-game `save`/`restore` verbs map to that slot with no prompt.
 
 ### Guestbook (operator)
 
-One board for the whole server at `<page-hash>:/page/guestbook.mu`, linked from
-the page. Both files are plain and read per request, so moderating needs no
-restart:
+One board for the whole server, linked from the top of the page
+(`<page-hash>:/page/guestbook.mu`). The page is read-only: players post by
+message, sending `sign: <line>` to any game address, and each line is marked
+with the first 6 hex of the sender's destination hash (the LXMF signature is
+what proves it — a page view carries no author, so the board has no form).
+One line per player per 10 minutes.
+
+Both files are plain and read per request, so moderating needs no restart:
 
 - `data/guestbook.jsonl` — the log (`{"ts", "who", "text"}` per line, newest
   last, trimmed to 200). Delete a line to drop an entry.
-- `data/guestbook-banned.txt` — denylist, one destination hash per line, `#`
-  comments allowed. Only useful against players who identified to the node:
-  RNS reveals an identity only when the client asks to be identified, so most
-  visitors post anonymously (labelled `anon`, throttled to one line per minute
-  server-wide; identified players get a 6-hex tag and one per 10 minutes).
+- `data/guestbook-banned.txt` — denylist: one destination hash per line, `#`
+  comments allowed.
 
-To try a post from a terminal: `python3 -m jclient browse <page-hash> --path
-/page/guestbook.mu --field message="hello"`.
+To try a post from a terminal: `echo "sign: hello" | python3 -m jclient play
+<game-address>`, then `python3 -m jclient browse <page-hash> --path
+/page/guestbook.mu` to read it back.
 
 ### Verify
 

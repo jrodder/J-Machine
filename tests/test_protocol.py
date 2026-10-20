@@ -33,9 +33,10 @@ class P:
         self.story = story
         self.game = Path(story).stem
 
-    def call(self, text="", sender=S1, verified=True, seed=SEED):
+    def call(self, text="", sender=S1, verified=True, seed=SEED, sign=None):
         return handle_message(self.game, sender, text, verified,
-                              self.sessions, self.store, str(self.story), seed)
+                              self.sessions, self.store, str(self.story),
+                              seed, sign=sign)
 
     def close(self):
         self.d.cleanup()
@@ -56,6 +57,50 @@ class Protocol(unittest.TestCase):
         r = self.p.call(text="look", verified=False)
         self.assertEqual(r, "[Rejected: unverified sender]")
         self.assertEqual(self.p.sessions, {})
+
+    def test_sign_verb_never_touches_the_game(self):
+        # spec §6 board: the verb is intercepted before any session work, so
+        # posting neither starts a game nor spends a turn nor counts as a move
+        seen = []
+
+        def sign(who, line):
+            seen.append((who, line))
+            return "signed"
+
+        self.assertEqual(self.p.call(text="sign: hello`!", sign=sign),
+                         "signed")
+        self.assertEqual(seen, [(S1, "hello`!")])
+        self.assertEqual(self.p.sessions, {})
+        self.assertEqual(list(Path(self.p.store.root).rglob("*")), [])
+
+    def test_sign_verb_needs_the_signature(self):
+        # the tag is only honest if the sender hash was verified
+        self.assertEqual(
+            self.p.call(text="sign: hi", verified=False,
+                        sign=lambda who, line: "x"),
+            "[Rejected: unverified sender]")
+
+    def test_sign_verb_takes_the_rest_as_one_line(self):
+        got = []
+
+        def sign(who, line):
+            got.append(line)
+            return "ok"
+
+        self.p.call(text="SIGN: north  and look", sign=sign)
+        self.assertEqual(got, ["north  and look"])
+
+    def test_sign_without_colon_is_a_game_move(self):
+        r = self.p.call(text="sign", sign=lambda who, line: "must not run")
+        self.assertEqual(norm(r),
+                         norm(play_session_lines(ZORK, ["sign"], seed=SEED)))
+
+    def test_sign_prefix_is_inert_when_the_board_is_not_wired(self):
+        # no sign callable -> the prefix is ordinary player text, never
+        # silently swallowed
+        r = self.p.call(text="sign: look")
+        self.assertEqual(norm(r), norm(play_session_lines(ZORK, ["sign: look"],
+                                                          seed=SEED)))
 
     def test_first_contact_intro(self):
         r = self.p.call(text="")
@@ -320,9 +365,9 @@ class PlayerStatsTests(unittest.TestCase):
         page = render_page("J", [("zork1", "<ab:cd:ef>")],
                            PlayerStats({"zork1": GameStats(3, 1, 42, 0.0)},
                                        12, 42, 1))
-        self.assertIn("42 moves · 12 players all time · 🏆 1 win", page)
+        self.assertIn("42 moves · 12 players all time · 1 win", page)
         self.assertIn("> zork1\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  3 explorers · 🏆 1 finished", page)
+                      "  3 explorers · 1 finished", page)
 
     def test_render_page_zero_pieces_omitted(self):
         """The odometer never shows a 0 it has no reason to show, and a game
@@ -333,7 +378,7 @@ class PlayerStatsTests(unittest.TestCase):
         self.assertIn("progress is saved per player automatically.\n"
                       "0 players all time\n", page)
         self.assertNotIn("moves", page)
-        self.assertNotIn("🏆", page)
+        self.assertNotIn("win", page)
         self.assertEqual(page.count("explorers"), 0)
 
 
@@ -356,13 +401,13 @@ class Helpers(unittest.TestCase):
         self.assertTrue(page.startswith(">`!J-Machine Games`!\n>"))
         # the address line is itself the link: label <hex>, url lxmf@<hex>
         self.assertIn("> zork1\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  2 explorers · last move 10 min ago · 🏆 1 finished",
+                      "  2 explorers · last move 10 min ago · 1 finished",
                       page)
         # a game nobody has finished omits that piece (the odometer never
         # leads with a zero), and singular/plural stays honest
         self.assertIn("> planetfall\n  `[<90:12:34>`lxmf@901234]\n"
                       "  1 explorer · last move 10 min ago\n", page)
-        self.assertIn("34 moves · 2 players all time · 🏆 1 win", page)
+        self.assertIn("34 moves · 2 players all time · 1 win", page)
         # manual line: only for games in the manuals mapping, in the
         # canonical micron form `[label`<hash>:/file/<name>] (NomadNet
         # Guide), and the url must survive parse_page's regexes untouched
@@ -372,11 +417,11 @@ class Helpers(unittest.TestCase):
                             manuals={"zork1": "ab:/file/zork1.pdf"},
                             guestbook="abcd:/page/guestbook.mu")
         self.assertIn("> zork1\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  2 explorers · last move 10 min ago · 🏆 1 finished\n"
+                      "  2 explorers · last move 10 min ago · 1 finished\n"
                       "  `[manual`ab:/file/zork1.pdf]", paged)
         self.assertNotIn("`[manual`", paged.split("> planetfall")[1])
         # guestbook link line, and it must not be readable as a game
-        self.assertIn("🖊️ `[Guestbook`abcd:/page/guestbook.mu]", paged)
+        self.assertIn("`[Guestbook`abcd:/page/guestbook.mu]", paged)
         # parse_page round-trips the address out of the link label (the real
         # parse_page is exercised over the wire in the network suite)
         import re
@@ -395,7 +440,7 @@ class Helpers(unittest.TestCase):
         # footer: https:// link to the Android mapper (meshchat opens it in
         # a new tab) — canonical micron form `[label`url], and parse_page's
         # game regexes must not match it
-        self.assertIn("📱 Mapping Helper App for Android: `[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]", full)
+        self.assertIn("Mapping Helper App for Android: `[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]", full)
 
     def test_write_rns_config(self):
         with tempfile.TemporaryDirectory() as d:

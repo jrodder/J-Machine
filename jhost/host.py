@@ -167,22 +167,28 @@ class Host:
 
     def _guest_handler(self, path, request_data, request_id,
                        remote_identity, requested_at):
-        """Guestbook board: view if no field came in, post if one did. A
-        micron submit arrives as request_data["field_message"] (the prefix is
-        what both NomadNet and meshchat send — guestbook.py cites the lines),
-        so one handler serves both. request_data is b"" for a plain fetch, so
-        the dict test is what separates the two."""
-        # 5-param shape required (RNS 1.5.0 inspects the signature)
-        note = None
-        if isinstance(request_data, dict) and "field_message" in request_data:
-            who = (RNS.hexrep(remote_identity.hash, delimit=False)
-                   if remote_identity is not None else None)
-            note = guestbook.post(self.gb_log, self.gb_ban, who,
-                                  request_data.get("field_message"))
+        """Guestbook board — read-only on this channel by design: posting goes
+        through the "sign:" message verb, because a page view carries no
+        author to tag (guestbook.py's docstring cites why). The 5-parameter
+        shape is required (RNS 1.5.0 inspects the handler signature).
+
+        `sign` names one game to post through (the first, stable order) so the
+        board's link opens a conversation the player can type into."""
         page_hex = RNS.hexrep(self.page_dest.hash, delimit=False)
-        return guestbook.render(self.name, page_hex,
-                                guestbook.entries(self.gb_log),
-                                note).encode()
+        games = sorted(self.destinations)
+        return guestbook.render(
+            self.name, page_hex, guestbook.entries(self.gb_log),
+            sign=(games[0], RNS.prettyhexrep(self.destinations[games[0]].hash))
+            if games else None).encode()
+
+    def _sign(self, sender, line):
+        """"sign: <line>" in any game conversation -> a board line, and the
+        reply. Tagged with the sender's own hash prefix, which their client
+        already shows them, and which the LXMF signature just proved."""
+        note = guestbook.post(self.gb_log, self.gb_ban, sender, line)
+        if note != "saved":
+            return guestbook.NOTES[note]
+        return f"{guestbook.NOTES[note]} #{sender[:guestbook.TAG]}"
 
     def _on_message(self, stem, msg):
         if not msg.signature_validated and \
@@ -204,7 +210,7 @@ class Host:
             reply = handle_message(stem, sender, text,
                                    msg.signature_validated, self.sessions,
                                    self.store, str(self.stories[stem]),
-                                   self.seed)
+                                   self.seed, sign=self._sign)
         src = RNS.Identity.recall(msg.source_hash)
         if src is None:
             # sender not in our known-destinations table yet (fresh node, or
