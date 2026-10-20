@@ -180,14 +180,14 @@ class Render(unittest.TestCase):
         self.assertIn("`[Post it`" + "abcd" * 8 + ":/page/guestbook.mu`*]",
                       page)
         # a verified post is marked with 6 chars of the signed destination
-        self.assertIn("#" + "a" * 6 + " · 10 min ago\n  hello \\`there\\`",
+        self.assertIn("`F3a8#" + "a" * 6 + "`f · 10 min ago\n  hello \\`there\\`",
                       page)
 
     def test_unverified_post_is_labelled_anon(self):
         page = render("J", "abcd" * 8,
                       [{"ts": self.NOW, "who": None, "text": "sup"}],
                       now=self.NOW)
-        self.assertIn("anon · just now\n  sup", page)
+        self.assertIn("`F777anon`f · just now\n  sup", page)
         self.assertNotIn("#None", page)      # never a fake tag
 
     def test_note_shows_after_a_submit(self):

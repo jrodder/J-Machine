@@ -365,9 +365,10 @@ class PlayerStatsTests(unittest.TestCase):
         page = render_page("J", [("zork1", "<ab:cd:ef>")],
                            PlayerStats({"zork1": GameStats(3, 1, 42, 0.0)},
                                        12, 42, 1))
-        self.assertIn("42 moves · 12 players all time · 1 win", page)
-        self.assertIn("> zork1\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  3 explorers · 1 finished", page)
+        self.assertIn("`Fb8342 moves`f · `F3a812 players all time`f · "
+                      "`Fd441 win`f", page)
+        self.assertIn("> `!zork1`!\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
+                      "  `F7773 explorers · 1 finished`f", page)
 
     def test_render_page_zero_pieces_omitted(self):
         """The odometer never shows a 0 it has no reason to show, and a game
@@ -376,7 +377,7 @@ class PlayerStatsTests(unittest.TestCase):
                                  ("yomama", "<be:ef:00>")],
                            PlayerStats({}, 0, 0, 0))
         self.assertIn("progress is saved per player automatically.\n"
-                      "0 players all time\n", page)
+                      "`F3a80 players all time`f\n", page)
         self.assertNotIn("moves", page)
         self.assertNotIn("win", page)
         self.assertEqual(page.count("explorers"), 0)
@@ -400,14 +401,15 @@ class Helpers(unittest.TestCase):
                             ("planetfall", "<90:12:34>")], stats)
         self.assertTrue(page.startswith(">`!J-Machine Games`!\n>"))
         # the address line is itself the link: label <hex>, url lxmf@<hex>
-        self.assertIn("> zork1\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  2 explorers · last move 10 min ago · 1 finished",
-                      page)
+        self.assertIn("> `!zork1`!\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
+                      "  `F7772 explorers · last move 10 min ago · "
+                      "1 finished`f", page)
         # a game nobody has finished omits that piece (the odometer never
         # leads with a zero), and singular/plural stays honest
-        self.assertIn("> planetfall\n  `[<90:12:34>`lxmf@901234]\n"
-                      "  1 explorer · last move 10 min ago\n", page)
-        self.assertIn("34 moves · 2 players all time · 1 win", page)
+        self.assertIn("> `!planetfall`!\n  `[<90:12:34>`lxmf@901234]\n"
+                      "  `F7771 explorer · last move 10 min ago`f\n", page)
+        self.assertIn("`Fb8334 moves`f · `F3a82 players all time`f · "
+                      "`Fd441 win`f", page)
         # manual line: only for games in the manuals mapping, in the
         # canonical micron form `[label`<hash>:/file/<name>] (NomadNet
         # Guide), and the url must survive parse_page's regexes untouched
@@ -416,20 +418,25 @@ class Helpers(unittest.TestCase):
                              ("planetfall", "<90:12:34>")], stats,
                             manuals={"zork1": "ab:/file/zork1.pdf"},
                             guestbook="abcd:/page/guestbook.mu")
-        self.assertIn("> zork1\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  2 explorers · last move 10 min ago · 1 finished\n"
+        self.assertIn("> `!zork1`!\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
+                      "  `F7772 explorers · last move 10 min ago · "
+                      "1 finished`f\n"
                       "  `[manual`ab:/file/zork1.pdf]", paged)
-        self.assertNotIn("`[manual`", paged.split("> planetfall")[1])
+        self.assertNotIn("`[manual`", paged.split("`!planetfall`!")[1])
         # guestbook link line, and it must not be readable as a game
         self.assertIn("🖊️ `[Guestbook (post by message)`abcd:/page/guestbook.mu]",
                       paged)
-        # ...and a blank line of its own before the game list
-        self.assertIn("`abcd:/page/guestbook.mu]\n>\n>Games", paged)
+        # ...separated from the game list by a micron rule
+        self.assertIn("`abcd:/page/guestbook.mu]\n-\n>Games", paged)
         # parse_page round-trips the address out of the link label (the real
         # parse_page is exercised over the wire in the network suite)
         import re
+        # the name anchor carries styling tags (bold here): not part of the
+        # name. jclient's parse_page strips micron styling so players still see
+        # "zork1" — proved over the wire in the network suite (test 1), since
+        # jclient needs RNS and this suite stays stdlib-only
         game_lines = re.findall(r"^> (\S+)\s*$", paged, re.M)
-        self.assertEqual(game_lines, ["zork1", "planetfall"])
+        self.assertEqual(game_lines, ["`!zork1`!", "`!planetfall`!"])
         addrs = re.findall(r"^\s{2}`\[(<[0-9a-fA-F:]+>)`lxmf@[0-9a-fA-F]+\]\s*$",
                            paged, re.M)
         self.assertEqual(addrs, ["<ab:cd:ef>", "<90:12:34>"])

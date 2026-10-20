@@ -142,12 +142,16 @@ def parse_page(text):
     and the '>'!title`! heading can never be read as a game. Pure; [] if
     unparseable."""
     import re
+    # `F + 3 hex / `f / `! / `_ / `* are styling, not part of the name: the host
+    # colours game names, and a name anchor of "`F3a8zork1`f" must still yield
+    # "zork1" (both tag forms verified against meshchat's MicronParser.js)
+    style = re.compile(r"`(?:F[0-9a-fA-F]{3}|[f!_*])")
     out = []
     cur = None
     for line in text.splitlines():
         m = re.match(r"^> (\S+)\s*$", line)
         if m:
-            cur = m.group(1)
+            cur = style.sub("", m.group(1))
             continue
         m = re.match(r"^\s{2}`\[(<[0-9a-fA-F:]+>)`lxmf@[0-9a-fA-F]+\]\s*$",
                      line)

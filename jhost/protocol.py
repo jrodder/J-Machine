@@ -285,6 +285,40 @@ def _autosave(store, game, sender, s):
               file=sys.stderr)
 
 
+# Micron colour tags for page and board copy. `F + 3 hex digits sets the foreground,
+# `f resets to the visitor's theme default - both verified by running meshchat's own
+# src/frontend/js/MicronParser.js over tagged samples (`Fd33 emits #dd3333; the
+# spans after `f came back #222 on light / #ddd on dark, so a closed tag cannot
+# bleed). Three rules came out of the same check:
+#   * 3-hex ONLY: the `FT + 6-hex truecolour form is NomadNet's, and meshchat
+#     renders it with NO colour at all, so truecolour would be invisible there.
+#   * no `B backgrounds: both clients band headings with the theme's own
+#     background (#777 light / #bbb dark), so a band of ours would fight it.
+#   * every hue must read on white AND black, since one page renders in
+#     whichever theme the visitor uses (meshchat stamping a dark palette onto a
+#     light background is exactly its grey-input defect).
+#   * colour goes on BODY lines only. A '> ' line is a heading, and both clients
+#     paint a heading with the theme's own band (#bbb dark / #777 light) and its
+#     own foreground; any hue of ours lands on that band at ~1.4:1 contrast
+#     (measured off a render of the page through meshchat's parser). Headings get
+#     emphasis from `! bold instead.
+# Colour tags: `F + 3 hex digits sets the foreground, `f resets to the
+# visitor's theme default (both verified by running meshchat's own
+# src/frontend/js/MicronParser.js over tagged samples: `Fd33 -> #dd3333,
+# and the spans after `f came back #222 on light / #ddd on dark, so a
+# closed tag never bleeds). Rules learned the same way:
+#   * 3-hex ONLY. The `FT + 6-hex truecolour form is NomadNet's and meshchat
+#     renders it with NO colour at all, so truecolour means invisible there.
+#   * no `B background tags: both clients already band headings with their
+#     theme's own background (#777 light / #bbb dark), and ours would fight it.
+#   * every hue has to read on white AND black, because the same page is
+#     rendered in whichever theme the visitor uses (meshchat stamping a dark
+#     palette onto a light background is exactly its grey-input defect).
+GOLD, TEAL, CLAY, GREY = "`Fb83", "`F3a8", "`Fd44", "`F777"
+RESET = "`f"
+DIV = "-"
+
+
 def render_page(name, games, stats, manuals=None, guestbook=None):
     """Micron page text (spec §6). games = [(stem, addr_str)];
     addr_str = pretty hexrep of the game's lxmf.delivery destination hash.
@@ -308,41 +342,39 @@ def render_page(name, games, stats, manuals=None, guestbook=None):
     targets in a new browser tab (NomadNetworkPage.vue, verified)."""
     def plural(n, one, many):
         return one if n == 1 else many
-    # H1 title bolded (micron `! toggle). The announce app_data is plain
-    # UTF-8 — meshchat renders it unformatted (parse_nomadnetwork_node_
-    # display_name = app_data.decode), so the page is the only place the
-    # name can carry styling. Bold via `!NAME`! (verified against the
-    # reference + meshchat MicronParser formatting-mode handling).
     # Odometer bar: what only ever accumulates (moves fed, players seen,
     # runs finished) rather than a window that reads empty most of the day.
     # The players piece always shows (a new node's honest 0); the other two
     # appear once they are non-zero.
     bar = []
     if stats.turns:
-        bar.append(f"{stats.turns} {plural(stats.turns, 'move', 'moves')}")
-    bar.append(f"{stats.total} {plural(stats.total, 'player', 'players')} "
-               f"all time")
+        bar.append(GOLD + f"{stats.turns} "
+                   + plural(stats.turns, "move", "moves") + RESET)
+    bar.append(TEAL + f"{stats.total} "
+               + plural(stats.total, "player", "players") + " all time"
+               + RESET)
     if stats.won:
-        bar.append(f"{stats.won} {plural(stats.won, 'win', 'wins')}")
+        bar.append(CLAY + f"{stats.won} "
+                   + plural(stats.won, "win", "wins") + RESET)
     lines = [">`!" + name + "`!", ">",
              "Infocom-era text adventures, playable by message.",
              "Send any message to a game's address to play;",
              "progress is saved per player automatically.",
              " · ".join(bar),
-             ">"]
+             DIV]
     if guestbook:
         # one line, in the top section where a visitor sees it before the game
         # list, and it cannot be read as a game: parse_page's name anchor
         # needs '> word' and its address line needs an indented
         # [label`lxmf@…] link, neither of which this is
         lines.append("🖊️ `[Guestbook (post by message)`" + guestbook + "]")
-        lines.append(">")   # air between the link and the game list
+        lines.append(DIV)   # a rule separates more strongly than a blank line
     lines.append(">Games")
     for stem, addr in games:
         # the bare '> name' line is jclient's parse anchor (spec §7): the
         # Z-machine version suffix used to sit here and added nothing a
         # player reads, while costing the parse contract a strict '(vN)'
-        lines.append(f"> {stem}")
+        lines.append("> `" + "!" + stem + "`" + "!")
         # the address is its own link: the visible label is the prettyhexrep
         # <xx:..:xx> (copyable), and the link target is lxmf@<32-hex-hash>,
         # which meshchat/Sideband turn into an open-conversation action
@@ -359,7 +391,7 @@ def render_page(name, games, stats, manuals=None, guestbook=None):
                 parts.append(f"last move {ago(g.last_move)}")
             if g.won:
                 parts.append(f"{g.won} finished")
-            lines.append("  " + " · ".join(parts))
+            lines.append("  " + GREY + " · ".join(parts) + RESET)
         if manuals and stem in manuals:
             # micron link syntax: leading backtick enters format mode, then
             # `[label`url] (verified: NomadNet Guide.py + reference
@@ -370,6 +402,7 @@ def render_page(name, games, stats, manuals=None, guestbook=None):
     # footer link (plain string, not an f-string — see the PEP 701 note
     # above): meshchat opens https:// link targets in a new browser tab
     lines.append(">")
+    lines.append(DIV)
     lines.append("Mapping Helper App for Android: `[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]")
     return "\n".join(lines) + "\n"
 
