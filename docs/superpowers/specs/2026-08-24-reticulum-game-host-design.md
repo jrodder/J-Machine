@@ -358,7 +358,7 @@ disk files — the host already knows its games and addresses):
 ```
 >J-Machine Games
 >
-One-line Z-machine games over Reticulum.
+Infocom-era text adventures, playable by message.
 Send any message to a game's address to play;
 progress is saved per player automatically.
 7 moves · 4 players all time · 🏆 1 win

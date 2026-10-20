@@ -314,7 +314,7 @@ def render_page(name, games, stats, manuals=None):
     if stats.won:
         bar.append(f"🏆 {stats.won} {plural(stats.won, 'win', 'wins')}")
     lines = [">`!" + name + "`!", ">",
-             "One-line Z-machine games over Reticulum.",
+             "Infocom-era text adventures, playable by message.",
              "Send any message to a game's address to play;",
              "progress is saved per player automatically.",
              " · ".join(bar),
