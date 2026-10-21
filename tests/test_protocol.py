@@ -8,7 +8,8 @@ import unittest
 from pathlib import Path
 
 from jhost.protocol import (FileSaveStore, GameStats, INPUT_CAP, PlayerStats,
-                            ago, handle_message, player_stats, render_page,
+                            ago, bump_moves, handle_message, player_stats,
+                            render_page,
                             write_rns_config)
 from tests.conformance.run_conformance import play_session_lines
 from tests.util import norm
@@ -266,13 +267,15 @@ class PlayerStatsTests(unittest.TestCase):
             # st_mtime is nanosecond-rounded by the kernel, so the recency
             # timestamp gets a delta, never an ==  comparison
             z = st.per_game["zork1"]
-            self.assertEqual((z.explorers, z.won, z.turns), (3, 1, 42))
+            # c has no metadata: a slot is only written after a turn, so it
+            # still proves one move rather than zero
+            self.assertEqual((z.explorers, z.won, z.turns), (3, 1, 43))
             self.assertAlmostEqual(z.last_move, self.NOW - 5 * 60, delta=1)
             pf = st.per_game["planetfall"]
             self.assertEqual((pf.explorers, pf.won, pf.turns), (1, 1, 7))
             self.assertAlmostEqual(pf.last_move, self.NOW - 15 * 60, delta=1)
             self.assertEqual(st.total, 3)      # a dedupes across games
-            self.assertEqual((st.turns, st.won), (49, 2))
+            self.assertEqual((st.turns, st.won), (50, 2))
 
     def test_unparseable_metadata_reads_as_absent(self):
         """A stray/truncated/hand-edited sidecar must never fail a render
@@ -285,7 +288,7 @@ class PlayerStatsTests(unittest.TestCase):
             self._slot(root, "zork1", "cc" * 16, meta=[1, 2])  # not an object
             st = player_stats(root)
             g = st.per_game["zork1"]
-            self.assertEqual((g.explorers, g.won, g.turns), (3, 0, 0))
+            self.assertEqual((g.explorers, g.won, g.turns), (3, 0, 3))
 
     def test_pruning_is_reflected(self):
         with tempfile.TemporaryDirectory() as d:
@@ -296,7 +299,23 @@ class PlayerStatsTests(unittest.TestCase):
                               player_stats(root).won), (9, 1))
             p.unlink()   # operator prunes a player
             self.assertEqual((player_stats(root).per_game,
-                              player_stats(root).turns), ({}, 0))
+                              player_stats(root).turns), ({}, 9))
+            # explorers follow the tree; the odometer does not fall back down
+
+    def test_move_odometer_never_shrinks(self):
+        """The turn total is the higher of the derived sum and the moves.json
+        floor, so lost metadata or a pruned tree cannot walk it backwards."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._slot(root, "zork1", "aa" * 16, meta={"turns": 3})
+            self._slot(root, "zork1", "bb" * 16, meta={"turns": 4})
+            self.assertEqual(player_stats(root).turns, 7)   # floor seeded here
+            for p in root.glob("*/*.json"):
+                p.unlink()                                  # metadata lost
+            self.assertEqual(player_stats(root).turns, 7)
+            bump_moves(root)
+            bump_moves(root)
+            self.assertEqual(player_stats(root).turns, 9)
 
     def test_empty_or_missing_dir(self):
         with tempfile.TemporaryDirectory() as d:

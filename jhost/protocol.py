@@ -14,6 +14,7 @@ import dataclasses
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -128,6 +129,45 @@ def _count(v):
         return 0
 
 
+# The move odometer needs a floor. Its numbers come off slot metadata, which
+# only exists for slots written after that feature landed (the reference
+# host has 105 slots and 3 metadata files), and a purely derived total goes
+# DOWN whenever metadata is lost or a slot is pruned -- an odometer that
+# cannot go backwards must not depend on files that can vanish. So a turn that
+# really lands also advances moves.json, and the page shows the higher of the
+# two. Per-save story move counters are NOT used: the v3 score/turn globals
+# 17/18 are an Inform convention and most titles here are Infocom's native
+# engine, where those globals hold something else entirely.
+MOVES_FILE = "moves.json"
+_moves_lock = threading.Lock()
+
+
+def _moves_path(saves_root):
+    # inside the root, so one directory holds all the host's mutable state and
+    # a test's temp saves dir can never reach a shared file. The slot scan is
+    # '*/*.zmsv', so a top-level file here is never mistaken for a slot.
+    return Path(saves_root) / MOVES_FILE
+
+
+def _read_moves(saves_root):
+    return _count(_read_meta_json(_moves_path(saves_root)).get("moves"))
+
+
+def _write_moves(saves_root, n):
+    p = _moves_path(saves_root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(MOVES_FILE + ".tmp")
+    tmp.write_text(json.dumps({"moves": int(n)}))
+    os.replace(tmp, p)
+    return p
+
+
+def bump_moves(saves_root):
+    """One fed turn advanced the all-time move odometer."""
+    with _moves_lock:
+        _write_moves(saves_root, _read_moves(saves_root) + 1)
+
+
 def ago(ts, now=None):
     """Relative time for the page's 'last move' and guestbook pieces —
     micron has no date formatting, and a 5-minute-resolution clock is the
@@ -213,6 +253,7 @@ def handle_message(game, sender, text, verified, sessions, store,
     # save_pending hold (which protects the mid-turn ZMSAVE image) does not
     # apply: the counters advance even when the autosave holds.
     st.turns += 1
+    bump_moves(store.root)
     if not st.won and any(isinstance(e, EndOfGame) for e in events):
         st.won = True
     store.save_meta(game, sender, {"turns": st.turns, "won": st.won})
@@ -484,20 +525,30 @@ def player_stats(saves_root):
     ARE the registry (spec §5): one file per (game, player), rewritten every
     turn, never deleted — so slot count = players who ever started a game and
     mtime = that player's last turn. Each slot's sibling <sender>.json adds
-    the move count and the win flag. The page reports what is on disk: prune
-    the tree and every number follows it, no separate ledger to reconcile.
-    A missing dir is the fresh-host state: no per-game entries, zeros."""
+    the move count and the win flag; a slot without one still proves its
+    player fed at least one turn (the autosave follows a turn), so it counts
+    as one move rather than zero. The turn total is the higher of that derived
+    sum and the moves.json floor, so losing metadata cannot walk the odometer
+    backwards. A missing dir is the fresh-host state: no per-game entries,
+    zeros."""
     per_game, identities = {}, set()
     for p in sorted(Path(saves_root).glob("*/*.zmsv")):
         m = _read_meta_json(p.with_suffix(".json"))
         g = per_game.setdefault(p.parent.name, GameStats())
         g.explorers += 1
-        g.turns += _count(m.get("turns"))
+        g.turns += _count(m.get("turns")) or 1
         g.won += 1 if m.get("won") else 0
         g.last_move = max(g.last_move, p.stat().st_mtime)
         identities.add(p.stem)
-    return PlayerStats(per_game, len(identities),
-                       sum(g.turns for g in per_game.values()),
+    derived = sum(g.turns for g in per_game.values())
+    path = _moves_path(saves_root)
+    floor = _read_moves(saves_root)
+    if not path.exists() and derived:
+        # first look since the ledger existed: start it at what the slots
+        # already prove, never at zero (that would restart the odometer)
+        _write_moves(saves_root, derived)
+        floor = derived
+    return PlayerStats(per_game, len(identities), max(floor, derived),
                        sum(g.won for g in per_game.values()))
 
 
