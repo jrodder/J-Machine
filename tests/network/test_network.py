@@ -320,7 +320,7 @@ class Network(unittest.TestCase):
                                                  timeout=180)
                 self.assertEqual(rc, 0, out + "\n" + netrig.logs_tail(work))
                 self.assertIn(gb + ":/page/guestbook.mu]", out)
-                self.assertLess(out.index(gb), out.index(">Games"))
+                self.assertLess(out.index(gb), out.index("`B153`Faff`!Games"))
                 self.assertEqual([n for n, _ in parse_page(out)], ["zork1"])
                 log = d / "host" / "guestbook.jsonl"
                 board = base + ["--path", "/page/guestbook.mu"]
@@ -338,7 +338,7 @@ class Network(unittest.TestCase):
                     "post", work, timeout=180)
                 self.assertEqual(rc3, 0, out3 + "\n" + netrig.logs_tail(work))
                 self.assertIn("signed — thanks!", out3)
-                self.assertIn("`F777anon`f · just now\n"
+                self.assertIn("`F999anon`f · `F999just now`f\n"
                               "  first line\\`!\\` and [x](y)", out3)
                 self.assertEqual(len(log.read_text().splitlines()), 1)
                 self.assertIsNone(json.loads(log.read_text())["who"])
@@ -362,9 +362,9 @@ class Network(unittest.TestCase):
                 rc6, out6, _ = netrig.run_captured(board, "board2", work,
                                                    timeout=180)
                 self.assertEqual(rc6, 0, out6 + "\n" + netrig.logs_tail(work))
-                self.assertIn("`F3a8#" + rec["who"][:6] + "`f · just now\n"
+                self.assertIn("`F4cb#" + rec["who"][:6] + "`f · `F999just now`f\n"
                               "  posted by message", out6)
-                self.assertIn("`F777anon`f", out6)   # both kinds, one board
+                self.assertIn("`F999anon`f", out6)   # both kinds, one board
             finally:
                 stop_host(h)
 

@@ -133,35 +133,38 @@ class Client:
 
 
 def parse_page(text):
-    """Parse the render_page format (jhost/protocol.py): a '> name' line
-    followed by a 2-space-indented address line. The address is a micron
-    link `` `[<hex:addr>`lxmf@<hash>] `` — extract the prettyhexrep
+    """Parse the render_page format (jhost/protocol.py): a game's name line
+    immediately followed by a 2-space-indented address line. The address is a
+    micron link `` `[<hex:addr>`lxmf@<hash>] `` — extract the prettyhexrep
     <hex:addr> label. Returns [(name:str, addr:str)]; name is the display title
-    when games/names.txt gave one, so it may contain spaces. The address line
-    is what makes the bare '> name' anchor safe: a candidate only counts if the
-    line under it is a game address link, so '>Games', the bare '>' lines
-    and the '>'!title`! heading can never be read as a game. Pure; [] if
-    unparseable."""
+    when games/names.txt gave one, so it may hold spaces.
+
+    The pairing IS the anchor: a line counts as a name only when the very next
+    line is a game address link, so prose, the DIV rules, the odometer bar, the
+    guestbook link and the manual links (which sit BELOW an address line) can
+    never be read as a game. Names are no longer '> ' headings because micron
+    paints a '> ' line with the parser's own light band (#222 on #bbb), which
+    shows as a grey strip behind any bar we draw; the host paints bars instead.
+    Pure; [] if unparseable."""
     import re
-    # `F + 3 hex / `f / `! / `_ / `* are styling, not part of the name: the host
-    # colours game names, and a name anchor of "`F3a8zork1`f" must still yield
-    # "zork1" (both tag forms verified against meshchat's MicronParser.js)
-    style = re.compile(r"`(?:F[0-9a-fA-F]{3}|[f!_*])")
+    # `F + 3 hex / `B + 3 hex / `f / `b / `! / `_ / `* and a bare ` are styling,
+    # not part of the name: a game name arrives as a coloured bar
+    # ('`B226`F9cf`!Zork I`b`f`!') and must still parse as "Zork I" (all tag
+    # forms verified against the npm micron-parser meshchat actually imports)
+    style = re.compile(r"`(?:F[0-9a-fA-F]{3}|B[0-9a-fA-F]{3}|[bf!_*])?")
     out = []
-    cur = None
+    prev = None                      # styling-stripped previous non-blank line
     for line in text.splitlines():
-        # '.+?' not '\S+': games/names.txt lets the operator show a real title
-        # ('Hitchhikers Guide to the Galaxy'), so a name may hold spaces. A
-        # '> ' line still only counts when the NEXT line is an lxmf address
-        # link, which is what keeps '>Games', the bare '>' lines and the
-        # heading out of the result.
-        m = re.match(r"^> (.+?)\s*$", line)
+        # one stripper for the whole line, then match the cleaned shape: the
+        # address line is '[<hex:addr>`lxmf@<hash>]' wrapped in styling, and
+        # stripping bare ` also removes the link's own ` (mode-enter `, label
+        # separator `), so the pattern below is the tag-free form
+        clean = style.sub("", line)
+        m = re.match(r"^\s{2}\[(<[0-9a-fA-F:]+>)lxmf@[0-9a-fA-F]+\]$", clean)
         if m:
-            cur = style.sub("", m.group(1))
+            if prev:
+                out.append((prev, m.group(1)))
+            prev = None
             continue
-        m = re.match(r"^\s{2}`\[(<[0-9a-fA-F:]+>)`lxmf@[0-9a-fA-F]+\]\s*$",
-                     line)
-        if m and cur is not None:
-            out.append((cur, m.group(1)))
-            cur = None
+        prev = clean.strip() or None
     return out

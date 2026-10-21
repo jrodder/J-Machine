@@ -56,7 +56,8 @@ import os
 import time
 from pathlib import Path
 
-from .protocol import DIV, GREY, RESET, TEAL, ago
+from .protocol import (BAR_BOARD, BAR_SECTION, BOLD, CLAY, CLOSE_BAR,
+                       CLOSE_HUE, CYAN, DIV, GREY, RESET, TEAL, ago)
 
 CAP = 200      # stored/displayed chars per entry (one line is what the board
                # renders, and LoRa pages stay ~1 KB)
@@ -174,15 +175,16 @@ def render(name, page_hex, es, note=None, now=None):
     empty on purpose. The submit link's third component `*` is what makes the
     client send every field, and meshchat skips its page cache for that request
     — so the poster sees their own line at the top."""
-    L = [">`!" + "🖊️ Guestbook" + "`!", ">",
-         "`[« games`" + page_hex + ":/page/index.mu]", DIV,
+    L = [BAR_BOARD + "🖊️ Guestbook" + CLOSE_BAR, ">",
+         CYAN + BOLD + "`[« games`" + page_hex + ":/page/index.mu]" + CLOSE_HUE,
+         DIV,
          "Leave me a message letting me know what you think!",
          f"Type one line and tap Post. Max {CAP} chars.",
          "A post is marked with your destination hash when your",
          "client has identified to this node, otherwise 'anon'.",
          DIV]
     if note:
-        L.append("`!" + NOTES.get(note, NOTES["banned"]) + "`!")
+        L.append(CLAY + BOLD + NOTES.get(note, NOTES["banned"]) + CLOSE_BAR)
         L.append(">")
     L.append("`<48|message`>")
     L.append("`[Post it`" + page_hex + ":/page/guestbook.mu`*]")
@@ -190,12 +192,12 @@ def render(name, page_hex, es, note=None, now=None):
     if not es:
         L.append("No lines yet — yours would be the first.")
     else:
-        L.append(f">Last {len(es)}")
+        L.append(BAR_SECTION + f"Last {len(es)}" + CLOSE_BAR)
         for e in es:
             # a verified tag carries the accent; an anonymous mark stays in the
             # theme's own grey, so the difference is visible at a glance
             who = str(e.get("who") or "")[:TAG]
             mark = (TEAL + "#" + who + RESET) if who else (GREY + "anon" + RESET)
-            L.append(mark + " · " + ago(e.get("ts", 0), now))
+            L.append(mark + " · " + GREY + ago(e.get("ts", 0), now) + RESET)
             L.append("  " + str(e.get("text", "")))
     return "\n".join(L) + "\n"

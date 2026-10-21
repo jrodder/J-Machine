@@ -171,7 +171,7 @@ class Render(unittest.TestCase):
         page = render("J", "abcd" * 8,
                       [{"ts": self.NOW - 600, "who": A,
                         "text": "hello \\`there\\`"}], now=self.NOW)
-        self.assertIn(">`!🖊️ Guestbook`!", page)
+        self.assertIn("`B313`Ffaf`!🖊️ Guestbook`b`f`!", page)
         self.assertIn("`[« games`" + "abcd" * 8 + ":/page/index.mu]", page)
         # one field, one tap: the field's backtick part is its starting VALUE
         # (so it must stay empty), and the link's third component '*' tells the
@@ -180,14 +180,14 @@ class Render(unittest.TestCase):
         self.assertIn("`[Post it`" + "abcd" * 8 + ":/page/guestbook.mu`*]",
                       page)
         # a verified post is marked with 6 chars of the signed destination
-        self.assertIn("`F3a8#" + "a" * 6 + "`f · 10 min ago\n  hello \\`there\\`",
+        self.assertIn("`F4cb#" + "a" * 6 + "`f · `F99910 min ago`f\n  hello \\`there\\`",
                       page)
 
     def test_unverified_post_is_labelled_anon(self):
         page = render("J", "abcd" * 8,
                       [{"ts": self.NOW, "who": None, "text": "sup"}],
                       now=self.NOW)
-        self.assertIn("`F777anon`f · just now\n  sup", page)
+        self.assertIn("`F999anon`f · `F999just now`f\n  sup", page)
         self.assertNotIn("#None", page)      # never a fake tag
 
     def test_note_shows_after_a_submit(self):

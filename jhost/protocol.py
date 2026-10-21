@@ -285,38 +285,64 @@ def _autosave(store, game, sender, s):
               file=sys.stderr)
 
 
-# Micron colour tags for page and board copy. `F + 3 hex digits sets the foreground,
-# `f resets to the visitor's theme default - both verified by running meshchat's own
-# src/frontend/js/MicronParser.js over tagged samples (`Fd33 emits #dd3333; the
-# spans after `f came back #222 on light / #ddd on dark, so a closed tag cannot
-# bleed). Three rules came out of the same check:
-#   * 3-hex ONLY: the `FT + 6-hex truecolour form is NomadNet's, and meshchat
-#     renders it with NO colour at all, so truecolour would be invisible there.
-#   * no `B backgrounds: both clients band headings with the theme's own
-#     background (#777 light / #bbb dark), so a band of ours would fight it.
-#   * every hue must read on white AND black, since one page renders in
-#     whichever theme the visitor uses (meshchat stamping a dark palette onto a
-#     light background is exactly its grey-input defect).
-#   * colour goes on BODY lines only. A '> ' line is a heading, and both clients
-#     paint a heading with the theme's own band (#bbb dark / #777 light) and its
-#     own foreground; any hue of ours lands on that band at ~1.4:1 contrast
-#     (measured off a render of the page through meshchat's parser). Headings get
-#     emphasis from `! bold instead.
-# Colour tags: `F + 3 hex digits sets the foreground, `f resets to the
-# visitor's theme default (both verified by running meshchat's own
-# src/frontend/js/MicronParser.js over tagged samples: `Fd33 -> #dd3333,
-# and the spans after `f came back #222 on light / #ddd on dark, so a
-# closed tag never bleeds). Rules learned the same way:
-#   * 3-hex ONLY. The `FT + 6-hex truecolour form is NomadNet's and meshchat
-#     renders it with NO colour at all, so truecolour means invisible there.
-#   * no `B background tags: both clients already band headings with their
-#     theme's own background (#777 light / #bbb dark), and ours would fight it.
-#   * every hue has to read on white AND black, because the same page is
-#     rendered in whichever theme the visitor uses (meshchat stamping a dark
-#     palette onto a light background is exactly its grey-input defect).
-GOLD, TEAL, CLAY, GREY = "`Fb83", "`F3a8", "`Fd44", "`F777"
+# Micron colour, chosen from what the clients actually paint rather than from
+# the micron spec. Measured by running the npm micron-parser@1.1.0 that meshchat
+# imports (components/nomadnetwork/NomadNetworkPage.vue:581 calls
+# `new MicronParser()` with no argument, so darkTheme is always true) over
+# tagged samples, then reading the container that html is injected into (same
+# file, line 106: `<div class="... bg-black text-white nodeContainer">`, with no
+# dark: variant). Three rules came out of that:
+#   * The canvas is ALWAYS black, in both themes, so an accent only has to clear
+#     black and no hue has to work on white: WCAG against #000 gives `Ffb5
+#     12.5:1, `F8cf 12.1:1, `Fc9f 9.6:1, `F999 7.4:1.
+#   * A '> ' line is a heading and the parser paints its OWN band (#222 on #bbb)
+#     with its own foreground. Colouring the foreground alone loses to that band:
+#     gold on it measured 1.1:1, which is exactly what reads as "monochrome".
+#     Setting BOTH `F and `B overrides band and text (the parser copies
+#     state.bg_color onto the heading div), and once both are ours the visitor's
+#     theme cannot move the contrast: #eef on #442266 = 10.0:1, #9cf on
+#     #222266 = 8.4:1, #aff on #115533 = 7.8:1.
+#   * 3-hex only: the `FT + 6-hex truecolour form is NomadNet's, and meshchat's
+#     parser honours truecolour in a form our markup never reaches.
+# Tags: `Fxxx foreground, `Bxxx background, `f resets foreground, `b resets
+# background, `! toggles bold, a bare ` resets fg+bg+formatting. One parser
+# state covers the whole document, so style survives a newline: every coloured
+# line closes itself.
+# Bars are bg+fg together, hence theme-independent by construction:
+BAR_TITLE = "`B631`Ffda`!"       # warm amber: this page paints its own headings
+BAR_SECTION = "`B153`Faff`!"     # pale cyan on green: section headings
+BAR_GAME = "`B226`F9cf`!"        # sky on indigo: one per game (the page's bulk)
+BAR_ODOMETER = "`B321`!"         # warm band; the numbers keep their own hues
+BAR_BOARD = "`B313`Ffaf`!"       # pink on dark magenta: the guestbook head
+# Game names are TEXT, not a bar: a filled block behind 25+ names reads as a
+# stack of grey slabs, and the parser's own heading band would add another.
+# Warm + bold so a name still outranks the cool hues under it (cyan address,
+# violet manual, green/grey/clay stats).
+AMBER = "`Ffc9"                   # same hue without the bold toggle (the
+GAME = AMBER + "`!"               # odometer band is already bold)
+RESET_BAR = "`b"                 # drop the band, keep going on the line
+# Accents on the black canvas, each closed with `f:
+GOLD, TEAL, GREEN, CLAY = "`Ffb5", "`F4cb", "`F8c5", "`Ff88"
+CYAN, VIOLET, PINK, GREY = "`F8cf", "`Fc9f", "`Ffaf", "`F999"
 RESET = "`f"
+RESET_ALL = "`"
+BOLD = "`!"
+# Closers, chosen by running the npm parser's own convertMicronToHtml (the
+# path meshchat calls) over candidate markup: a bare ` after a ']' is eaten by
+# link parsing, so it does NOT reset state and the band/bold bled into the next
+# line. Closing every tag by name always works; `! is a toggle, so it pairs
+# with the `! inside each BAR_*. CLOSE_HUE is for lines that never opened bold
+# (toggling `! there would switch bold ON).
+CLOSE_BAR = "`b`f`!"
+CLOSE_HUE = "`b`f"
+CLOSE_TEXT = "`f`!"               # bold text with no band behind it
 DIV = "-"
+# The Android map helper link (a plain string, not an f-string — see the PEP
+# 701 note in render_page): meshchat's onNodePageUrlClick opens http(s) targets
+# in a new browser tab (NomadNetworkPage.vue), so this leaves the mesh cleanly.
+# Defined after the tags it uses.
+MAPPER_LINK = (VIOLET + "`[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]"
+               + RESET)
 
 
 def render_page(name, games, stats, manuals=None, guestbook=None, names=None):
@@ -360,20 +386,33 @@ def render_page(name, games, stats, manuals=None, guestbook=None, names=None):
     if stats.won:
         bar.append(CLAY + f"{stats.won} "
                    + plural(stats.won, "win", "wins") + RESET)
-    lines = [">`!" + name + "`!", ">",
+    # Newest move anywhere on the host, with the game it happened in: counters
+    # only ever grow, so they cannot answer "is anyone here right now?". The
+    # piece is omitted until a slot exists, so a fresh host says nothing.
+    recent = max(((g.last_move, stem) for stem, g in stats.per_game.items()
+                  if g.last_move), default=None)
+    if recent:
+        bar.append(GREY + "last move " + ago(recent[0]) + RESET + " in "
+                   + AMBER + (names or {}).get(recent[1], recent[1]) + RESET)
+    lines = [BAR_TITLE + name + CLOSE_BAR, ">",
              "Infocom-era text adventures, playable by message.",
              "Send any message to a game's address to play;",
              "progress is saved per player automatically.",
-             " · ".join(bar),
+             BAR_ODOMETER + " · ".join(bar) + CLOSE_BAR,
              DIV]
     if guestbook:
-        # one line, in the top section where a visitor sees it before the game
-        # list, and it cannot be read as a game: parse_page's name anchor
-        # needs '> word' and its address line needs an indented
-        # [label`lxmf@…] link, neither of which this is
-        lines.append("🖊️ `[Guestbook (post by message)`" + guestbook + "]")
+        # ONE line, two links: the board on the left, the map helper to its
+        # right. The mapper used to be the page's last line, i.e. below a
+        # 25-game scroll, and it is a link people want before they play.
+        # Each link closes its own styling: a bare ` right after ']' is eaten
+        # by link parsing (measured), so the board closes with CLOSE_BAR before
+        # the separator, and the mapper carries its own hue.
+        lines.append(BAR_BOARD + "🖊️ `[Guestbook (post by message)`"
+                     + guestbook + "]" + CLOSE_BAR
+                     + GREY + " · " + RESET
+                     + MAPPER_LINK)
         lines.append(DIV)   # a rule separates more strongly than a blank line
-    lines.append(">Games")
+    lines.append(BAR_SECTION + "Games" + CLOSE_BAR)
     for stem, addr in games:
         # the bare '> name' line is jclient's parse anchor (spec §7): the
         # Z-machine version suffix used to sit here and added nothing a
@@ -384,36 +423,37 @@ def render_page(name, games, stats, manuals=None, guestbook=None, names=None):
         # rename can never orphan a player's slot tree. Operator-authored
         # file: keep titles plain text, no micron markup.
         shown = (names or {}).get(stem, stem)
-        lines.append("> `" + "!" + shown + "`" + "!")
+        lines.append(GAME + shown + CLOSE_TEXT)
         # the address is its own link: the visible label is the prettyhexrep
         # <xx:..:xx> (copyable), and the link target is lxmf@<32-hex-hash>,
         # which meshchat/Sideband turn into an open-conversation action
         # (NomadNetworkPage.vue strips "lxmf@" and requires 32 hex chars,
         # no delimiters).
-        lines.append("  `[" + addr + "`lxmf@"
-                     + addr.strip("<>").replace(":", "").lower() + "]")
+        # the leading ` before '[' is what enters micron link mode, so the
+        # colour tags go OUTSIDE it and the label keeps its own `[...`...]`
+        lines.append("  " + CYAN + "`[" + addr + "`lxmf@"
+                     + addr.strip("<>").replace(":", "").lower() + "]"
+                     + CLOSE_HUE)
         g = stats.per_game.get(stem)
         if g:  # no slot for this game -> no stats line at all (nothing true
                # to say; a fresh host does not advertise 0s per game)
-            parts = [f"{g.explorers} "
-                     + plural(g.explorers, "explorer", "explorers")]
+            parts = [GREEN + f"{g.explorers} "
+                     + plural(g.explorers, "explorer", "explorers") + RESET]
             if g.last_move:
-                parts.append(f"last move {ago(g.last_move)}")
+                parts.append(GREY + f"last move {ago(g.last_move)}" + RESET)
             if g.won:
-                parts.append(f"{g.won} finished")
-            lines.append("  " + GREY + " · ".join(parts) + RESET)
+                parts.append(CLAY + f"{g.won} finished" + RESET)
+            lines.append("  " + " · ".join(parts))
         if manuals and stem in manuals:
             # micron link syntax: leading backtick enters format mode, then
             # `[label`url] (verified: NomadNet Guide.py + reference
             # MicronParser.py + meshchat's MicronParser.js). Concatenated,
             # not an f-string: a literal '[' plus a subscript expression
             # trips PEP 701 bracket matching in CPython 3.14 (SyntaxError)
-            lines.append("  `[manual`" + manuals[stem] + "]")
-    # footer link (plain string, not an f-string — see the PEP 701 note
-    # above): meshchat opens https:// link targets in a new browser tab
-    lines.append(">")
-    lines.append(DIV)
-    lines.append("Mapping Helper App for Android: `[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]")
+            lines.append("  " + VIOLET + "`[manual`" + manuals[stem] + "]"
+                         + CLOSE_HUE)
+    # the mapper link rides the guestbook line further up (it is not a game:
+    # it is neither paired with an address link nor shaped like one)
     return "\n".join(lines) + "\n"
 
 

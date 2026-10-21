@@ -365,10 +365,10 @@ class PlayerStatsTests(unittest.TestCase):
         page = render_page("J", [("zork1", "<ab:cd:ef>")],
                            PlayerStats({"zork1": GameStats(3, 1, 42, 0.0)},
                                        12, 42, 1))
-        self.assertIn("`Fb8342 moves`f · `F3a812 players all time`f · "
-                      "`Fd441 win`f", page)
-        self.assertIn("> `!zork1`!\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  `F7773 explorers · 1 finished`f", page)
+        self.assertIn("`B321`!`Ffb542 moves`f · `F4cb12 players all time`f · "
+                      "`Ff881 win`f", page)
+        self.assertIn("`Ffc9`!zork1`f`!\n  `F8cf`[<ab:cd:ef>`lxmf@abcdef]`b`f\n"
+                      "  `F8c53 explorers`f · `Ff881 finished`f", page)
 
     def test_render_page_zero_pieces_omitted(self):
         """The odometer never shows a 0 it has no reason to show, and a game
@@ -377,7 +377,7 @@ class PlayerStatsTests(unittest.TestCase):
                                  ("yomama", "<be:ef:00>")],
                            PlayerStats({}, 0, 0, 0))
         self.assertIn("progress is saved per player automatically.\n"
-                      "`F3a80 players all time`f\n", page)
+                      "`B321`!`F4cb0 players all time`f", page)
         self.assertNotIn("moves", page)
         self.assertNotIn("win", page)
         self.assertEqual(page.count("explorers"), 0)
@@ -391,10 +391,10 @@ class PlayerStatsTests(unittest.TestCase):
                             1, 9, 0)
         page = render_page("J", [("h2g2", "<ab:cd:ef>"), ("zork1", "<11:22:33>")],
                            stats, names={"h2g2": "Hitchhikers Guide to the Galaxy"})
-        self.assertIn("> `!Hitchhikers Guide to the Galaxy`!\n"
-                      "  `[<ab:cd:ef>`lxmf@abcdef]", page)
+        self.assertIn("`Ffc9`!Hitchhikers Guide to the Galaxy`f`!\n"
+                      "  `F8cf`[<ab:cd:ef>`lxmf@abcdef]", page)
         # no names.txt entry -> the stem is the title, unchanged behaviour
-        self.assertIn("> `!zork1`!\n  `[<11:22:33>`lxmf@112233]", page)
+        self.assertIn("`Ffc9`!zork1`f`!\n  `F8cf`[<11:22:33>`lxmf@112233]", page)
         try:
             from jclient.client import parse_page
         except ImportError:
@@ -420,17 +420,30 @@ class Helpers(unittest.TestCase):
         page = render_page("J-Machine Games",
                            [("zork1", "<ab:cd:ef>"),
                             ("planetfall", "<90:12:34>")], stats)
-        self.assertTrue(page.startswith(">`!J-Machine Games`!\n>"))
+        self.assertTrue(page.startswith("`B631`Ffda`!J-Machine Games`b`f`!\n>"))
         # the address line is itself the link: label <hex>, url lxmf@<hex>
-        self.assertIn("> `!zork1`!\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  `F7772 explorers · last move 10 min ago · "
-                      "1 finished`f", page)
+        self.assertIn("`Ffc9`!zork1`f`!\n  `F8cf`[<ab:cd:ef>`lxmf@abcdef]`b`f\n"
+                      "  `F8c52 explorers`f · `F999last move 10 min ago`f · "
+                      "`Ff881 finished`f", page)
         # a game nobody has finished omits that piece (the odometer never
         # leads with a zero), and singular/plural stays honest
-        self.assertIn("> `!planetfall`!\n  `[<90:12:34>`lxmf@901234]\n"
-                      "  `F7771 explorer · last move 10 min ago`f\n", page)
-        self.assertIn("`Fb8334 moves`f · `F3a82 players all time`f · "
-                      "`Fd441 win`f", page)
+        self.assertIn("`Ffc9`!planetfall`f`!\n  `F8cf`[<90:12:34>`lxmf@901234]`b`f\n"
+                      "  `F8c51 explorer`f · `F999last move 10 min ago`f\n", page)
+        # the odometer also names the newest move anywhere, in which game: the
+        # counters alone cannot say whether anyone is here now
+        self.assertIn("`B321`!`Ffb534 moves`f · `F4cb2 players all time`f · "
+                      "`Ff881 win`f · `F999last move 10 min ago`f in `Ffc9zork1`f",
+                      page)
+        # names are TEXT on the canvas: no `B block behind a name (a filled bar
+        # behind 25 names reads as a stack of grey slabs) and no '> ' heading
+        # (the parser paints its own #bbb band there)
+        for line in page.splitlines():
+            if line.startswith("`Ffc9`!"):
+                self.assertNotIn("`B", line)
+        # no micron headings anywhere either (only the bare '>' spacer lines),
+        # so nothing paints the parser's #bbb band
+        self.assertEqual([l for l in page.splitlines()
+                          if l.startswith(">") and l.strip() != ">"], [])
         # manual line: only for games in the manuals mapping, in the
         # canonical micron form `[label`<hash>:/file/<name>] (NomadNet
         # Guide), and the url must survive parse_page's regexes untouched
@@ -439,16 +452,16 @@ class Helpers(unittest.TestCase):
                              ("planetfall", "<90:12:34>")], stats,
                             manuals={"zork1": "ab:/file/zork1.pdf"},
                             guestbook="abcd:/page/guestbook.mu")
-        self.assertIn("> `!zork1`!\n  `[<ab:cd:ef>`lxmf@abcdef]\n"
-                      "  `F7772 explorers · last move 10 min ago · "
-                      "1 finished`f\n"
-                      "  `[manual`ab:/file/zork1.pdf]", paged)
-        self.assertNotIn("`[manual`", paged.split("`!planetfall`!")[1])
+        self.assertIn("`Ffc9`!zork1`f`!\n  `F8cf`[<ab:cd:ef>`lxmf@abcdef]`b`f\n"
+                      "  `F8c52 explorers`f · `F999last move 10 min ago`f · "
+                      "`Ff881 finished`f\n"
+                      "  `Fc9f`[manual`ab:/file/zork1.pdf]`b`f", paged)
+        self.assertNotIn("`[manual`", paged.split("`!planetfall`f`!")[1])
         # guestbook link line, and it must not be readable as a game
         self.assertIn("🖊️ `[Guestbook (post by message)`abcd:/page/guestbook.mu]",
                       paged)
         # ...separated from the game list by a micron rule
-        self.assertIn("`abcd:/page/guestbook.mu]\n-\n>Games", paged)
+        self.assertIn("Droid-Mapper]`f\n-\n`B153`Faff`!Games", paged)
         # parse_page round-trips the address out of the link label (the real
         # parse_page is exercised over the wire in the network suite)
         import re
@@ -456,9 +469,9 @@ class Helpers(unittest.TestCase):
         # name. jclient's parse_page strips micron styling so players still see
         # "zork1" — proved over the wire in the network suite (test 1), since
         # jclient needs RNS and this suite stays stdlib-only
-        game_lines = re.findall(r"^> (\S+)\s*$", paged, re.M)
-        self.assertEqual(game_lines, ["`!zork1`!", "`!planetfall`!"])
-        addrs = re.findall(r"^\s{2}`\[(<[0-9a-fA-F:]+>)`lxmf@[0-9a-fA-F]+\]\s*$",
+        game_lines = re.findall(r"^`Ffc9`!(.+?)`f`!$", paged, re.M)
+        self.assertEqual(game_lines, ["zork1", "planetfall"])
+        addrs = re.findall(r"^\s{2}`F8cf`\[(<[0-9a-fA-F:]+>)`lxmf@[0-9a-fA-F]+\]",
                            paged, re.M)
         self.assertEqual(addrs, ["<ab:cd:ef>", "<90:12:34>"])
         # full-length address: label keeps the prettyhexrep, url is the
@@ -467,11 +480,14 @@ class Helpers(unittest.TestCase):
                                   "<ab:cd:12:34:56:78:9a:bc:de:f0:11:22:33:44:55:66>")],
                            PlayerStats({}, 0, 0, 0))
         self.assertIn("`[<ab:cd:12:34:56:78:9a:bc:de:f0:11:22:33:44:55:66>`"
-                      "lxmf@abcd123456789abcdef0112233445566]", full)
-        # footer: https:// link to the Android mapper (meshchat opens it in
-        # a new tab) — canonical micron form `[label`url], and parse_page's
-        # game regexes must not match it
-        self.assertIn("Mapping Helper App for Android: `[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]", full)
+                      "lxmf@abcd123456789abcdef0112233445566]", full)        # mapper link: it no longer sits at the bottom of a 25-game scroll, it
+        # rides the guestbook line to the RIGHT of the board link (meshchat
+        # opens https:// targets in a new browser tab)
+        gb_line = next(l for l in paged.splitlines() if "Guestbook" in l)
+        self.assertIn("`[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]",
+                      gb_line)
+        self.assertLess(gb_line.index("Guestbook"), gb_line.index("Droid-Mapper"))
+        self.assertNotIn("Droid-Mapper", paged.split("`B153`Faff`!Games")[1])
 
     def test_write_rns_config(self):
         with tempfile.TemporaryDirectory() as d:
