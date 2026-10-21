@@ -382,6 +382,27 @@ class PlayerStatsTests(unittest.TestCase):
         self.assertNotIn("win", page)
         self.assertEqual(page.count("explorers"), 0)
 
+    def test_operator_display_titles_render_and_parse(self):
+        """games/names.txt shows a real title ('Hitchhikers Guide to the
+        Galaxy' for h2g2) while the stem stays the identity/save key. A
+        multi-word title must still parse as exactly one game: the address
+        line under the name is what disambiguates the anchor."""
+        stats = PlayerStats({"h2g2": GameStats(2, 0, 9, time.time() - 70)},
+                            1, 9, 0)
+        page = render_page("J", [("h2g2", "<ab:cd:ef>"), ("zork1", "<11:22:33>")],
+                           stats, names={"h2g2": "Hitchhikers Guide to the Galaxy"})
+        self.assertIn("> `!Hitchhikers Guide to the Galaxy`!\n"
+                      "  `[<ab:cd:ef>`lxmf@abcdef]", page)
+        # no names.txt entry -> the stem is the title, unchanged behaviour
+        self.assertIn("> `!zork1`!\n  `[<11:22:33>`lxmf@112233]", page)
+        try:
+            from jclient.client import parse_page
+        except ImportError:
+            self.skipTest("jclient needs RNS")
+        self.assertEqual(parse_page(page),
+                         [("Hitchhikers Guide to the Galaxy", "<ab:cd:ef>"),
+                          ("zork1", "<11:22:33>")])
+
 
 class Helpers(unittest.TestCase):
     def test_file_save_store_roundtrip(self):

@@ -136,8 +136,9 @@ def parse_page(text):
     """Parse the render_page format (jhost/protocol.py): a '> name' line
     followed by a 2-space-indented address line. The address is a micron
     link `` `[<hex:addr>`lxmf@<hash>] `` — extract the prettyhexrep
-    <hex:addr> label. Returns [(name:str, addr:str)]. The address line is
-    what makes the bare '> name' anchor safe: a candidate only counts if the
+    <hex:addr> label. Returns [(name:str, addr:str)]; name is the display title
+    when games/names.txt gave one, so it may contain spaces. The address line
+    is what makes the bare '> name' anchor safe: a candidate only counts if the
     line under it is a game address link, so '>Games', the bare '>' lines
     and the '>'!title`! heading can never be read as a game. Pure; [] if
     unparseable."""
@@ -149,7 +150,12 @@ def parse_page(text):
     out = []
     cur = None
     for line in text.splitlines():
-        m = re.match(r"^> (\S+)\s*$", line)
+        # '.+?' not '\S+': games/names.txt lets the operator show a real title
+        # ('Hitchhikers Guide to the Galaxy'), so a name may hold spaces. A
+        # '> ' line still only counts when the NEXT line is an lxmf address
+        # link, which is what keeps '>Games', the bare '>' lines and the
+        # heading out of the result.
+        m = re.match(r"^> (.+?)\s*$", line)
         if m:
             cur = style.sub("", m.group(1))
             continue

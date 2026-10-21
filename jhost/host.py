@@ -48,6 +48,17 @@ class Host:
         self.destinations = {}        # stem -> delivery Destination
         self.stories = {}             # stem -> story Path
         self.manuals = {}             # stem -> games/<stem>.pdf Path
+        # games/names.txt: 'stem=Display Title' lines, read once at startup.
+        # Display only — identities, saves and stats stay keyed by stem, so a
+        # title is never a migration. Same convention as <stem>.pdf: an asset
+        # that sits next to the game it labels (both under gitignored games/).
+        self.names = {}
+        nf = self.games_dir / "names.txt"
+        if nf.exists():
+            for line in nf.read_text().splitlines():
+                stem, eq, shown = line.partition("=")
+                if eq and stem.strip() and not stem.lstrip().startswith("#"):
+                    self.names[stem.strip()] = shown.strip()
         # guestbook log + operator denylist (spec §6): plain files under
         # data/, read per request, so pruning/moderating needs no restart
         self.gb_log = self.data_dir / "guestbook.jsonl"
@@ -163,7 +174,8 @@ class Host:
         # — rns:// URLs are for terminal tools (rngit/rnsh), not micron
         manuals = {s: f"{page_hex}:/file/{s}.pdf" for s in self.manuals}
         return render_page(self.name, games, stats, manuals=manuals,
-                           guestbook=f"{page_hex}:/page/guestbook.mu").encode()
+                           guestbook=f"{page_hex}:/page/guestbook.mu",
+                           names=self.names).encode()
 
     def _guest_handler(self, path, request_data, request_id,
                        remote_identity, requested_at):

@@ -319,7 +319,7 @@ RESET = "`f"
 DIV = "-"
 
 
-def render_page(name, games, stats, manuals=None, guestbook=None):
+def render_page(name, games, stats, manuals=None, guestbook=None, names=None):
     """Micron page text (spec §6). games = [(stem, addr_str)];
     addr_str = pretty hexrep of the game's lxmf.delivery destination hash.
     stats = player_stats(...) — cumulative counts + last-move recency: one
@@ -337,6 +337,10 @@ def render_page(name, games, stats, manuals=None, guestbook=None):
     url = lxmf@<32-hex-hash> (meshchat/Sideband open a conversation).
     guestbook = the page-destination URL of the guestbook board; when given,
     one link line to it sits in the top section, under the odometer bar.
+    names = {stem: display title} from games/names.txt; a stem with no entry
+    shows its stem. Multi-word titles are safe for the parse contract because
+    a '> ' line only counts as a game when the line under it is an lxmf
+    address link (see jclient parse_page).
     The page footer links the Android mapper (Droid-Mapper): a plain
     https:// link target — meshchat's onNodePageUrlClick opens http(s)
     targets in a new browser tab (NomadNetworkPage.vue, verified)."""
@@ -374,7 +378,13 @@ def render_page(name, games, stats, manuals=None, guestbook=None):
         # the bare '> name' line is jclient's parse anchor (spec §7): the
         # Z-machine version suffix used to sit here and added nothing a
         # player reads, while costing the parse contract a strict '(vN)'
-        lines.append("> `" + "!" + stem + "`" + "!")
+        # shown = the display title from games/names.txt when the operator
+        # gave one ('Hitchhikers Guide to the Galaxy' for h2g2); the stem is
+        # still the identity/save key, and it stays the lookup key here, so a
+        # rename can never orphan a player's slot tree. Operator-authored
+        # file: keep titles plain text, no micron markup.
+        shown = (names or {}).get(stem, stem)
+        lines.append("> `" + "!" + shown + "`" + "!")
         # the address is its own link: the visible label is the prettyhexrep
         # <xx:..:xx> (copyable), and the link target is lxmf@<32-hex-hash>,
         # which meshchat/Sideband turn into an open-conversation action
