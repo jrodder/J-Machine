@@ -420,7 +420,12 @@ class Helpers(unittest.TestCase):
         page = render_page("J-Machine Games",
                            [("zork1", "<ab:cd:ef>"),
                             ("planetfall", "<90:12:34>")], stats)
-        self.assertTrue(page.startswith("`B631`Ffda`!J-Machine Games`b`f`!\n>"))
+        self.assertTrue(page.startswith(
+            "`B631`Ffda`!J-Machine Games`b`f`!\nInfocom-era"))
+        # No micron headings anywhere on the page: a bare ">" line is an empty
+        # heading1, and theme-aware clients band it with their own colours
+        # (meshchat dark heading1 bg = bbb) -> a white/grey bar over the tagline.
+        self.assertFalse([l for l in page.split("\n") if l.startswith(">")])
         # the address line is itself the link: label <hex>, url lxmf@<hex>
         self.assertIn("`Ffc9`!zork1`f`!\n  `F8cf`[<ab:cd:ef>`lxmf@abcdef]`b`f\n"
                       "  `F8c52 explorers`f · `F999last move 10 min ago`f · "

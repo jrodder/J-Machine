@@ -175,7 +175,7 @@ def render(name, page_hex, es, note=None, now=None):
     empty on purpose. The submit link's third component `*` is what makes the
     client send every field, and meshchat skips its page cache for that request
     — so the poster sees their own line at the top."""
-    L = [BAR_BOARD + "🖊️ Guestbook" + CLOSE_BAR, ">",
+    L = [BAR_BOARD + "🖊️ Guestbook" + CLOSE_BAR,
          CYAN + BOLD + "`[« games`" + page_hex + ":/page/index.mu]" + CLOSE_HUE,
          DIV,
          "Leave me a message letting me know what you think!",
@@ -185,7 +185,7 @@ def render(name, page_hex, es, note=None, now=None):
          DIV]
     if note:
         L.append(CLAY + BOLD + NOTES.get(note, NOTES["banned"]) + CLOSE_BAR)
-        L.append(">")
+        L.append("")   # blank line, not a micron heading (theme band)
     L.append("`<48|message`>")
     L.append("`[Post it`" + page_hex + ":/page/guestbook.mu`*]")
     L.append(DIV)

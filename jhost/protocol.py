@@ -394,7 +394,9 @@ def render_page(name, games, stats, manuals=None, guestbook=None, names=None):
     if recent:
         bar.append(GREY + "last move " + ago(recent[0]) + RESET + " in "
                    + AMBER + (names or {}).get(recent[1], recent[1]) + RESET)
-    lines = [BAR_TITLE + name + CLOSE_BAR, ">",
+    # No bare ">" spacer: in micron that is an empty heading1, and theme-aware
+    # clients paint it with their own band (meshchat's dark heading1 bg = bbb).
+    lines = [BAR_TITLE + name + CLOSE_BAR,
              "Infocom-era text adventures, playable by message.",
              "Send any message to a game's address to play;",
              "progress is saved per player automatically.",
