@@ -35,6 +35,19 @@ class TestStoryFile(unittest.TestCase):
         self.assertEqual(f.header.declared_len, 0xd86d * 8)
         self.assertEqual(f.header.term_chars_addr, 0xb4d6)   # 0x2E, v5+ field
 
+    def test_v4_accepted(self):
+        # v4 shares v5's 4-byte packed addresses, so relabelling a real story
+        # exercises the gate + LENGTH_DIVISOR[4] without a v4 fixture.
+        data = bytearray((C / "planetfall.z5").read_bytes())
+        data[0] = 4
+        p = C.parent / "v4probe.z4"
+        p.write_bytes(bytes(data))
+        try:
+            f = StoryFile.load(p)
+            self.assertEqual((f.header.version, f.header.length_divisor), (4, 4))
+        finally:
+            p.unlink()
+
     def test_unsupported_version(self):
         data = bytearray((C / "planetfall.z5").read_bytes())
         data[0] = 6
