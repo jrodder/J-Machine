@@ -6,8 +6,11 @@ from pathlib import Path
 
 from .events import StoryFileError
 
-LENGTH_DIVISOR = {3: 2, 5: 4, 8: 8}
-SUPPORTED = (3, 5, 8)
+# v4 shares v5's 4-byte packed addresses. Enabled from the reference build:
+# Bureaucracy / AMFY / Trinity (v4) boot and run ~30 commands clean, but there
+# is no v4 story in tests/corpus, so no suite exercises these paths yet.
+LENGTH_DIVISOR = {3: 2, 4: 4, 5: 4, 8: 8}
+SUPPORTED = (3, 4, 5, 8)
 # (No fixed image size: memory = story image + interpreter stack;
 # see StoryFile.memory_size. The classic 512 KB space is too small for v8.)
 

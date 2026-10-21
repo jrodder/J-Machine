@@ -90,7 +90,7 @@ class Host:
             "/page/guestbook.mu", self._guest_handler,
             allow=RNS.Destination.ALLOW_ALL)
 
-        for story in sorted(self.games_dir.glob("*.z[358]")):
+        for story in sorted(self.games_dir.glob("*.z[3458]")):
             self._add_game(story)
 
         self._announce_all()
