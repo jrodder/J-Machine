@@ -139,6 +139,8 @@ def _count(v):
 # 17/18 are an Inform convention and most titles here are Infocom's native
 # engine, where those globals hold something else entirely.
 MOVES_FILE = "moves.json"
+WINS_FILE = "wins.json"
+AGAIN = "again"        # host verb: [Game over] is not the end of a player's interest
 _moves_lock = threading.Lock()
 
 
@@ -166,6 +168,37 @@ def bump_moves(saves_root):
     """One fed turn advanced the all-time move odometer."""
     with _moves_lock:
         _write_moves(saves_root, _read_moves(saves_root) + 1)
+
+
+def _wins_path(saves_root):
+    # inside the root like moves.json; the slot scan is '*/*.zmsv' so a
+    # top-level file is never mistaken for a slot
+    return Path(saves_root) / WINS_FILE
+
+
+def _read_wins(saves_root):
+    w = _read_meta_json(_wins_path(saves_root)).get("wins")
+    return w if isinstance(w, dict) else {}
+
+
+def record_win(saves_root, game, sender):
+    """A run the host saw end is remembered per (game, sender). The win flag
+    in a slot's sidecar dies with the slot -- pruning a player retired their
+    win -- and the Z-machine's end-of-run state gives no way to recover it
+    once the evidence is gone, so the witness lives in its own file."""
+    with _moves_lock:
+        wins = _read_wins(saves_root)
+        seen = wins.get(game)
+        if not isinstance(seen, list):
+            seen = []
+        if sender not in seen:
+            seen.append(sender)
+            wins[game] = seen
+            p = _wins_path(saves_root)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_name(WINS_FILE + ".tmp")
+            tmp.write_text(json.dumps({"wins": wins}))
+            os.replace(tmp, p)
 
 
 def ago(ts, now=None):
@@ -208,7 +241,8 @@ def handle_message(game, sender, text, verified, sessions, store,
 
     game      story stem (e.g. "zork1")
     sender    32-hex-char lxmf.delivery destination hash of the sender
-    text      message.content_as_string() (None -> "")
+    text      message.content_as_string() (None -> ""); "again" on a finished
+              run starts a new run in the same slot (counters kept)
     verified  message.signature_validated
     sessions  {(game, sender): GameState}, mutated in place
     store     SaveStore
@@ -236,7 +270,13 @@ def handle_message(game, sender, text, verified, sessions, store,
             print(f"jhost: {game}/{sender[:8]}: story load failed ({e}); "
                   f"game unavailable", file=sys.stderr)
             return "[Game unavailable]"
-    elif st.session.done:
+    # done is checked after BOTH paths: the end-of-run flag rides inside the
+    # autosave image, so a host restart replays a dead slot dead. Feeding a
+    # dead run would otherwise count a move for a line the story refuses, and
+    # would leave the player no way back but the operator's rm.
+    if st.session.done:
+        if text.strip().lower() == AGAIN:
+            return _restart_run(game, sender, story_path, store, st, seed)
         return "[Game over]"
     if text == "":
         return st.transcript
@@ -256,6 +296,7 @@ def handle_message(game, sender, text, verified, sessions, store,
     bump_moves(store.root)
     if not st.won and any(isinstance(e, EndOfGame) for e in events):
         st.won = True
+        record_win(store.root, game, sender)
     store.save_meta(game, sender, {"turns": st.turns, "won": st.won})
     if not st.save_pending:
         _autosave(store, game, sender, st.session)
@@ -283,6 +324,22 @@ def _new_game(game, sender, story_path, store, seed):
                   f"fresh start", file=sys.stderr)
     st.transcript = _render(batch)
     return st
+
+
+def _restart_run(game, sender, story_path, store, st, seed):
+    """`again` after [Game over]: a fresh run in the same slot. The counters
+    are the player's history and stay exactly as they are -- turns fed, and a
+    latched win -- only the story rewinds. The dead image is overwritten now
+    instead of left to be replayed: the slot is rewritten, never deleted
+    (spec §5)."""
+    s = Session()
+    st.session = s
+    st.save_pending = False
+    _install_handlers(s, st, store, game, sender)
+    batch = s.load(str(story_path), seed=seed)
+    st.transcript = _render(batch)
+    _autosave(store, game, sender, s)
+    return st.transcript
 
 
 def _install_handlers(s, st, store, game, sender):
@@ -548,6 +605,13 @@ def player_stats(saves_root):
         # already prove, never at zero (that would restart the odometer)
         _write_moves(saves_root, derived)
         floor = derived
+    for game, seen in _read_wins(saves_root).items():
+        # a win the host witnessed stays counted even once the slot that
+        # proved it is pruned (the end-of-run state is unrecoverable)
+        if not isinstance(seen, list):
+            continue
+        g = per_game.setdefault(game, GameStats())
+        g.won = max(g.won, len({s for s in seen if isinstance(s, str)}))
     return PlayerStats(per_game, len(identities), max(floor, derived),
                        sum(g.won for g in per_game.values()))
 

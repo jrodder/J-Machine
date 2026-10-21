@@ -121,6 +121,10 @@ There is also a verified door that the page doesn't advertise: sending
 `sign: <line>` to any game address appends to the same board, tagged with the
 sender hash its LXMF signature proves.
 
+Two verbs go to a game address and are not story input: `sign: <line>` above,
+and `again` once a run has ended (death or `quit`). `again` starts a fresh run
+in the same slot and keeps the player's counters — moves stay on the odometer,
+and a run the host saw end keeps its mark even if that slot is pruned later.
 Both files are plain and read per request, so moderating needs no restart:
 
 - `data/guestbook.jsonl` — the log (`{"ts", "who", "text"}` per line, newest

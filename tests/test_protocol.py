@@ -317,6 +317,45 @@ class PlayerStatsTests(unittest.TestCase):
             bump_moves(root)
             self.assertEqual(player_stats(root).turns, 9)
 
+    def test_again_restarts_a_finished_run(self):
+        """Dying used to end a (game, sender) for good: the end-of-run flag
+        rides inside the autosave, so even a host restart replayed it dead.
+        `again` rewinds the story and keeps the player's counters."""
+        p = P()
+        self.addCleanup(p.close)
+        for line in ("north", "open window", "east", "look"):
+            p.call(line)
+        p.call("quit")
+        p.call("y")
+        self.assertEqual("[Game over]", p.call("look"))
+        meta = p.store.load_meta(p.game, S1)
+        ledger = (p.store.root / "moves.json").read_text()
+        self.assertTrue(meta["won"])
+        fresh = p.call("again")
+        self.assertTrue(fresh.strip() and "Game over" not in fresh)
+        kept = p.store.load_meta(p.game, S1)
+        self.assertTrue(kept["won"])
+        self.assertGreaterEqual(kept["turns"], meta["turns"])
+        # the verb itself is not a move the story was fed
+        self.assertEqual((p.store.root / "moves.json").read_text(), ledger)
+        self.assertNotIn("Game over", p.call("look"))
+        p.sessions.clear()                       # exactly what a host restart does
+        self.assertNotIn("game over", p.call("look").lower())
+
+    def test_witnessed_win_survives_pruning(self):
+        p = P()
+        self.addCleanup(p.close)
+        for line in ("north", "open window", "east", "look"):
+            p.call(line)
+        p.call("quit")
+        p.call("y")
+        root = p.store.root
+        self.assertEqual(player_stats(root).won, 1)
+        for f in root.glob("*/*"):               # operator prunes that player
+            f.unlink()
+        self.assertEqual((player_stats(root).total, player_stats(root).won),
+                         (0, 1))
+
     def test_empty_or_missing_dir(self):
         with tempfile.TemporaryDirectory() as d:
             st = player_stats(Path(d) / "nope")
