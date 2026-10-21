@@ -341,8 +341,8 @@ DIV = "-"
 # 701 note in render_page): meshchat's onNodePageUrlClick opens http(s) targets
 # in a new browser tab (NomadNetworkPage.vue), so this leaves the mesh cleanly.
 # Defined after the tags it uses.
-MAPPER_LINK = (VIOLET + "`[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]"
-               + RESET)
+MAPPER_LINK = (VIOLET + "`[Droid-Mapper (Android map helper)`"
+               + "https://github.com/jrodder/Droid-Mapper]" + RESET)
 
 
 def render_page(name, games, stats, manuals=None, guestbook=None, names=None):

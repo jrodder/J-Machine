@@ -484,8 +484,8 @@ class Helpers(unittest.TestCase):
         # rides the guestbook line to the RIGHT of the board link (meshchat
         # opens https:// targets in a new browser tab)
         gb_line = next(l for l in paged.splitlines() if "Guestbook" in l)
-        self.assertIn("`[Droid-Mapper`https://github.com/jrodder/Droid-Mapper]",
-                      gb_line)
+        self.assertIn("`[Droid-Mapper (Android map helper)`"
+                      "https://github.com/jrodder/Droid-Mapper]", gb_line)
         self.assertLess(gb_line.index("Guestbook"), gb_line.index("Droid-Mapper"))
         self.assertNotIn("Droid-Mapper", paged.split("`B153`Faff`!Games")[1])
 
