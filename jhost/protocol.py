@@ -228,6 +228,49 @@ def _render(events):
     return "".join(out)
 
 
+def chunk_text(text, limit, parts=12):
+    """Split a reply into <= `parts` pieces of at most `limit` UTF-8 bytes,
+    breaking on newlines where one exists inside the budget.
+
+    LXMF delivers anything longer than one link packet as an RNS Resource,
+    which is a pull mechanism: the recipient has to ask for the parts. A phone
+    on a mesh client does not, so a long reply is advertised forever and read
+    as "no answer" -- while the turn it describes was already played. Short
+    messages arrive; intros and long descriptions silently do not.
+
+    `parts` bounds the burst: the transcript re-fetch returns the whole run, so
+    an unbounded split would be dozens of transmissions over the radio."""
+    if limit < 1:
+        limit = 1
+    lines = text.splitlines(keepends=True)
+    out, buf = [], ""
+    for line in lines:
+        while len(line.encode()) > limit:       # one long line: hard split
+            cut = len(line)
+            while len(line[:cut].encode()) > limit:
+                cut -= 1
+            rest = line[cut:]
+            if buf:
+                out.append(buf)
+                buf = ""
+            out.append(line[:cut])
+            line = rest
+        candidate = buf + line
+        if buf and len(candidate.encode()) > limit:
+            out.append(buf)
+            buf = line
+        else:
+            buf = candidate
+    if buf:
+        out.append(buf)
+    if len(out) > parts:
+        kept = out[:parts]
+        kept[-1] += f"\n[... {len(out) - parts} more parts cut -- send an " \
+                    f"empty message for the rest]"
+        out = kept
+    return out or [""]
+
+
 def handle_message(game, sender, text, verified, sessions, store,
                    story_path, seed=None, sign=None):
     """One inbound LXMF message -> reply text. Never raises on protocol

@@ -15,7 +15,7 @@ import RNS
 from LXMF import LXMessage, LXMRouter
 
 from . import guestbook
-from .protocol import (DEST_JSON, FileSaveStore, handle_message,
+from .protocol import (DEST_JSON, FileSaveStore, chunk_text, handle_message,
                        player_stats, render_page, write_rns_config)
 
 
@@ -32,7 +32,8 @@ DEFAULT_ANNOUNCE_INTERVAL = 60 * 60
 
 class Host:
     def __init__(self, data_dir, games_dir, name="🕹️ J-Machine Games 🕹️",
-                 seed=None, port=4242, announce_interval=None):
+                 seed=None, port=4242, announce_interval=None,
+                 propagation_node=None):
         self.data_dir = Path(data_dir)
         self.games_dir = Path(games_dir)
         self.name = name
@@ -42,6 +43,14 @@ class Host:
                                   if announce_interval is not None
                                   else DEFAULT_ANNOUNCE_INTERVAL)
         self.lock = threading.Lock()
+        # A reply is a link transfer to the player. A phone on a slow mesh
+        # often cannot hold that link open for a multi-packet transcript: the
+        # link closes mid-transfer, LXMF exhausts its attempts and drops the
+        # message -- the turn is played, the player sees nothing. With a node
+        # set, a failed reply is handed to the LXMF network instead and the
+        # player's own router holds it until their next inbox poll.
+        self.propagation_node = (bytes.fromhex(propagation_node.replace(":", ""))
+                                 if propagation_node else None)
         self.sessions = {}            # {(game, sender): GameState}
         self.store = FileSaveStore(self.data_dir / "saves")
         self.routers = {}             # stem -> LXMRouter
@@ -126,6 +135,8 @@ class Host:
         router = LXMRouter(identity=ident,
                            storagepath=str(self.data_dir / "lxmf" / stem),
                            name=stem)
+        if self.propagation_node:
+            router.set_outbound_propagation_node(self.propagation_node)
         # stamp_cost=0: free to play (spec §9; stamps are PoW, no credits).
         # register_delivery_identity creates AND registers the lxmf/delivery
         # RNS destination and returns it (a second manual RNS.Destination for
@@ -246,9 +257,50 @@ class Host:
                                RNS.Destination.SINGLE, "lxmf", "delivery")
         # reply pattern verified spec §2; LXMessage requires an explicit
         # source (the game's delivery destination); output uncapped
-        m = LXMessage(dest, self.destinations[stem],
-                      content=reply.encode(), title=stem)
-        self.routers[stem].handle_outbound(m)
+        #
+        # One LXMF message per link packet: longer content is delivered as an
+        # RNS Resource, which the recipient has to ask for, and a phone client
+        # does not. Parts are queued in order and a mesh client renders them as
+        # consecutive messages, which reads as one reply.
+        budget = LXMessage.LINK_PACKET_MAX_CONTENT - len(stem) - 24
+        for part in chunk_text(reply, budget):
+            m = LXMessage(dest, self.destinations[stem],
+                          content=part.encode(), title=stem)
+            m.failed_callback = lambda _m: self._reply_failed(stem, sender,
+                                                              dest, reply)
+            self.routers[stem].handle_outbound(m)
+
+    def _reply_failed(self, stem, sender, dest, reply):
+        """LXMF drops a reply once its direct attempts run out (only a debug
+        log line says so). Say it, and hand the text to the propagation
+        network if the operator named a node that can hold it for the player."""
+        print(f"jhost: {stem}: reply to {sender[:guestbook.TAG]} lost over link",
+              file=sys.stderr)
+        # LXMF keeps reusing a link the peer abandoned ("Using available direct
+        # link" + "Waiting for proof" for an hour, in the log), so every later
+        # reply to that player queues behind a link that can never deliver.
+        # Drop it: the next attempt builds a fresh one. This is the state a
+        # service restart used to be the only way to clear.
+        dead = self.routers[stem].direct_links.pop(dest.hash, None)
+        if dead is not None:
+            try:
+                dead.teardown()
+            except Exception:
+                pass
+        if self.propagation_node is None:
+            print(f"jhost: {stem}: no --propagation-node set; reply dropped",
+                  file=sys.stderr)
+            return
+        m = LXMessage(dest, self.destinations[stem], content=reply.encode(),
+                      title=stem, desired_method=LXMessage.PROPAGATED)
+        m.failed_callback = lambda _m: print(
+            f"jhost: {stem}: reply to {sender[:guestbook.TAG]} lost via "
+            f"propagation too", file=sys.stderr)
+        try:
+            self.routers[stem].handle_outbound(m)
+        except OSError as e:
+            print(f"jhost: {stem}: propagation handoff failed ({e})",
+                  file=sys.stderr)
 
     def _announce_all(self):
         # the announce itself is silent at loglevel 6 — this line is the

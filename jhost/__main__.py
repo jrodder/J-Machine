@@ -1,5 +1,5 @@
 """python3 -m jhost <games-dir> [--data-dir DIR] [--name NAME] [--seed N]
-[--port N] [--announce-interval MIN]"""
+[--port N] [--announce-interval MIN] [--propagation-node HASH]"""
 import argparse
 
 from .host import Host
@@ -16,9 +16,14 @@ def main():
                     metavar="MIN",
                     help="re-announce cadence in minutes (default 60; "
                          "RNS rate-limits announces to ~1/hour)")
+    ap.add_argument("--propagation-node", default=None, metavar="HASH",
+                    help="lxmf/delivery hash of a propagation node; a reply a "
+                         "player's link cannot receive is handed to this node "
+                         "for the player's router to hold (default: drop it)")
     a = ap.parse_args()
     host = Host(a.data_dir, a.games_dir, a.name, a.seed, a.port,
-                announce_interval=a.announce_interval * 60)
+                announce_interval=a.announce_interval * 60,
+                propagation_node=a.propagation_node)
     host.start()
     host.run()
 
