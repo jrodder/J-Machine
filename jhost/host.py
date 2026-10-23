@@ -15,7 +15,7 @@ import RNS
 from LXMF import LXMessage, LXMRouter
 
 from . import guestbook
-from .protocol import (DEST_JSON, FileSaveStore, chunk_text, handle_message,
+from .protocol import (DEST_JSON, FileSaveStore, handle_message,
                        player_stats, render_page, write_rns_config)
 
 
@@ -256,19 +256,16 @@ class Host:
         dest = RNS.Destination(src, RNS.Destination.OUT,
                                RNS.Destination.SINGLE, "lxmf", "delivery")
         # reply pattern verified spec §2; LXMessage requires an explicit
-        # source (the game's delivery destination); output uncapped
-        #
-        # One LXMF message per link packet: longer content is delivered as an
-        # RNS Resource, which the recipient has to ask for, and a phone client
-        # does not. Parts are queued in order and a mesh client renders them as
-        # consecutive messages, which reads as one reply.
-        budget = LXMessage.LINK_PACKET_MAX_CONTENT - len(stem) - 24
-        for part in chunk_text(reply, budget):
-            m = LXMessage(dest, self.destinations[stem],
-                          content=part.encode(), title=stem)
-            m.failed_callback = lambda _m: self._reply_failed(stem, sender,
-                                                              dest, reply)
-            self.routers[stem].handle_outbound(m)
+        # source (the game's delivery destination); output uncapped. One
+        # message per reply, however long: RNS re-advertises a resource until
+        # the recipient pulls it and never cancels, so a slow phone gets the
+        # whole reply in one readable message instead of parts that arrive
+        # out of order.
+        m = LXMessage(dest, self.destinations[stem],
+                      content=reply.encode(), title=stem)
+        m.failed_callback = lambda _m: self._reply_failed(stem, sender, dest,
+                                                          reply)
+        self.routers[stem].handle_outbound(m)
 
     def _reply_failed(self, stem, sender, dest, reply):
         """LXMF drops a reply once its direct attempts run out (only a debug

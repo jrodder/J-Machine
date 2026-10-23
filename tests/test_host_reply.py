@@ -14,41 +14,6 @@ except ImportError:
     HAS_LXMF = False
 
 
-class ChunkReply(unittest.TestCase):
-    """LXMF turns content over one link packet into an RNS Resource the
-    recipient must pull, and phone clients never pull it: every reply has to
-    fit in `limit` bytes or the player sees nothing."""
-
-    def test_reassembles_exactly(self):
-        from jhost.protocol import chunk_text
-        for limit in (320, 64, 8):
-            text = "\n".join(f"line {i} of the transcript, some length" for
-                             i in range(40)) + "\n"
-            parts = chunk_text(text, limit, parts=1000)
-            self.assertEqual("".join(parts), text)
-            for p in parts:
-                self.assertLessEqual(len(p.encode()), limit,
-                                     f"limit {limit}: {p[:30]!r}")
-
-    def test_splits_multibyte_and_long_lines(self):
-        from jhost.protocol import chunk_text
-        parts = chunk_text("é" * 50 + "\n" + "x" * 500, 64, parts=1000)
-        self.assertEqual("".join(parts), "é" * 50 + "\n" + "x" * 500)
-        for p in parts:
-            self.assertLessEqual(len(p.encode()), 64)
-            p.encode().decode("utf-8")         # never a split codepoint
-
-    def test_burst_is_bounded(self):
-        from jhost.protocol import chunk_text
-        parts = chunk_text("x\n" * 400, 64, parts=3)
-        self.assertEqual(len(parts), 3)
-        self.assertIn("more parts cut", parts[-1])
-
-    def test_empty_reply_is_one_empty_message(self):
-        from jhost.protocol import chunk_text
-        self.assertEqual(chunk_text("", 320), [""])
-
-
 @unittest.skipUnless(HAS_LXMF, "needs LXMF/Reticulum")
 class ReplyFallback(unittest.TestCase):
     def setUp(self):
