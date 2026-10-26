@@ -211,6 +211,33 @@ def check_stats(stats_text, page_addr):
                            f"{leaked.group(0)}")
 
 
+def fetch_default_out(page_addr, work, port, path):
+    """`jclient fetch` with no --out, run with `work` as the working directory.
+
+    Separate from fetch_page on purpose: browse echoes to stdout, fetch writes a
+    file, and the bug this stage exists for was in choosing that file's name.
+    Omitting --out produced a str where a Path was needed, so every fetch died
+    with AttributeError after the response had arrived complete — a client
+    crash that looks identical to a transport failure from the outside. The
+    file on disk is the assertion."""
+    work.mkdir(parents=True, exist_ok=True)
+    # cwd is the temp dir so the default-named file lands where it can be
+    # checked, which puts the repo off sys.path -- restore it via PYTHONPATH
+    repo = Path(__file__).resolve().parents[2]
+    p = subprocess.run(
+        [sys.executable, "-u", "-m", "jclient", "fetch", page_addr, path,
+         "--data-dir", str(work), "--identity", str(work / "identity"),
+         "--port", str(port)], cwd=str(work), capture_output=True, text=True,
+        env=dict(os.environ, PYTHONPATH=str(repo)), timeout=PAGE_TIMEOUT)
+    if p.returncode != 0:
+        raise RuntimeError(f"fetch exit {p.returncode}: "
+                           f"{(p.stderr or p.stdout).strip()[-300:]}")
+    landed = work / Path(path).name
+    if not landed.exists() or landed.stat().st_size < 40:
+        raise RuntimeError(f"fetch reported success but wrote no {landed.name}")
+    return landed.read_bytes()
+
+
 def check_ledger(data_dir, played):
     """The record is part of the player path: if five turns went in and the
     ledger does not show five turns ended, the thing that is supposed to tell
@@ -343,6 +370,12 @@ def probe(work, done):
             check_ledger(data_dir, len(times))
         # after the turns, because the page reports activity: fetched before
         # anyone played it would pass on an empty page
+        # fetch, not browse: a file response, and the default output path
+        with stage("fetch", done):
+            blob = fetch_default_out(dests["page"], work / "client3", port,
+                                    "/page/stats.mu")
+            if b"activity" not in blob:
+                raise RuntimeError("fetched stats page has no activity heading")
         with stage("stats", done):
             stats = fetch_page(dests["page"], work / "client2", port,
                                path="/page/stats.mu")
@@ -360,7 +393,7 @@ def main():
     try:
         try:
             times = probe(work, done)
-            print(f"canary OK page=1 stats=1 turns={len(times)}/{len(TURNS)} "
+            print(f"canary OK page=1 stats=1 fetch=1 turns={len(times)}/{len(TURNS)} "
                   f"slowest={max(times):.1f}s total={time.time() - t0:.0f}s")
             return 0
         except Exception as e:

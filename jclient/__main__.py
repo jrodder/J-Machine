@@ -109,10 +109,23 @@ def cmd_fetch(a):
     if data is None:
         print("fetch failed (no response)", file=sys.stderr)
         return 1
-    out = Path(a.out) if a.out else Path(a.path).name
+    out = out_path(a.out, a.path)
     out.write_bytes(data)
     print(f"fetched {len(data)} bytes -> {out}", file=sys.stderr)
     return 0
+
+
+def out_path(explicit, page_path):
+    """Where `fetch` writes: --out when given, otherwise the basename of the
+    requested path, in the working directory.
+
+    The double Path() is the fix, not a quirk. `Path(a.path).name` is a str,
+    and a str has no write_bytes, so every fetch that omitted --out died with
+    AttributeError *after* the response had already arrived in full. That
+    reads like a broken transport and is not one; it is also why --out was
+    always passed by anything that used this command, and so the default was
+    never run."""
+    return Path(explicit) if explicit else Path(Path(page_path).name)
 
 
 def cmd_smoke(a):
