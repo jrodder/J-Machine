@@ -514,22 +514,28 @@ def render_page(name, games, stats, manuals=None, guestbook=None,
              "progress is saved per player automatically.",
              BAR_ODOMETER + " · ".join(bar) + CLOSE_BAR,
              DIV]
-    if guestbook:
-        # ONE line, two links: the board on the left, the map helper to its
-        # right. The mapper used to be the page's last line, i.e. below a
-        # 25-game scroll, and it is a link people want before they play.
-        # Each link closes its own styling: a bare ` right after ']' is eaten
-        # by link parsing (measured), so the board closes with CLOSE_BAR before
-        # the separator, and the mapper carries its own hue.
-        lines.append(BAR_BOARD + "🖊️ `[Guestbook (post by message)`"
-                     + guestbook + "]" + CLOSE_BAR
-                     + GREY + " · " + RESET
-                     + MAPPER_LINK)
+    if guestbook or stats_page:
+        # ONE line, everything about this host rather than this game: the board,
+        # the activity page, the map helper. The mapper used to be the page's
+        # last line, i.e. below a 25-game scroll, and it is a link people want
+        # before they play; grouping the rest is the same reasoning one level
+        # further, because a visitor who wants one wants to know the others
+        # exist. Each link closes its own styling: a bare ` right after ']' is
+        # eaten by link parsing (measured), so each carries its own reset before
+        # the separator, and the mapper brings its own hue.
+        links = []
+        if guestbook:
+            links.append(BAR_BOARD + "🖊️ `[Guestbook (post by message)`"
+                         + guestbook + "]" + CLOSE_BAR)
+        if stats_page:
+            # the separator inside a micron link is a backtick, same as every
+            # other link on this page -- a ')' here parses as link text and the
+            # address stops being clickable
+            links.append(BAR_BOARD + "📊 `[Activity & stats`" + stats_page
+                         + "]" + CLOSE_BAR)
+        links.append(MAPPER_LINK)
+        lines.append((GREY + " · " + RESET).join(links))
         lines.append(DIV)   # a rule separates more strongly than a blank line
-    if stats_page:
-        lines.append(BAR_BOARD + "📊 `[Activity & stats)`" + stats_page + "]"
-                     + CLOSE_BAR)
-        lines.append(DIV)
     lines.append(BAR_SECTION + "Games" + CLOSE_BAR)
     for stem, addr in games:
         # the bare '> name' line is jclient's parse anchor (spec §7): the
@@ -708,7 +714,7 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None):
 
     if back:
         lines.append(DIV)
-        lines.append(BAR_BOARD + "`[Back to the game list)`" + back + "]"
+        lines.append(BAR_BOARD + "`[Back to the game list`" + back + "]"
                      + CLOSE_BAR)
     return "\n".join(lines) + "\n"
 
