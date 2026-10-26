@@ -48,7 +48,7 @@ class ActivityPage(unittest.TestCase):
         many = render_stats("J", stats(
             zork1=GameStats(explorers=4, turns=180, last_move=1.0,
                             last_player_turns=58)))
-        self.assertIn("last player 58 moves", many)
+        self.assertIn("last player 58", many)
 
     def test_an_unplayed_game_is_not_rendered_as_a_zero(self):
         out = render_stats("J", stats(quiet=GameStats()))
@@ -114,7 +114,7 @@ class ActivityPage(unittest.TestCase):
         self.assertLessEqual(len(plain), P.ROW_WIDTH)
         self.assertIn("1,240 moves", plain)
         self.assertIn("9 players", plain)
-        self.assertNotIn("last 0 d ago", plain)
+        self.assertNotIn("0 d ago", plain)
 
     def test_a_short_title_keeps_every_piece(self):
         out = render_stats("J", stats(
@@ -124,8 +124,22 @@ class ActivityPage(unittest.TestCase):
         row = [ln for ln in out.splitlines() if "h2g2" in ln][0]
         plain = P._plain(row)
         for piece in ("179 moves", "2 players", "1 finished",
-                      "last player 2 moves"):
+                      "last player 2"):
             self.assertIn(piece, plain)
+
+    def test_a_long_real_title_still_shows_the_newest_players_count(self):
+        # Seen on the live node: "Hitchhikers Guide to the Galaxy" needed 93
+        # columns with full wording, so the shedding rule dropped the count and
+        # the one game the operator plays reported less than its short-named
+        # neighbours. The pieces get trimmed before the information does.
+        title = "Hitchhikers Guide to the Galaxy"
+        out = render_stats("J", stats(h2g2=GameStats(explorers=2, turns=179,
+                                                    last_move=1e12,
+                                                    last_player_turns=2)),
+                           names={"h2g2": title}, now=1e12)
+        plain = P._plain([ln for ln in out.splitlines() if title in ln][0])
+        self.assertLessEqual(len(plain), P.ROW_WIDTH)
+        self.assertIn("last player 2", plain)
 
     def test_the_back_link_is_the_way_home(self):
         out = render_stats("J", stats(), back="deadbeef:/page/index.mu")

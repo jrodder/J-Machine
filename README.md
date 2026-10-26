@@ -199,6 +199,12 @@ so a game line sheds its pieces rather than wrapping into what reads as two game
 recency goes first (the list is sorted by it and Recent days repeats it), then the
 newest player's count, then finishes; moves and players never drop.
 
+The numeric pieces share one unit, so a row reads `179 moves · 2 players · last
+player 2` instead of repeating "moves" three times. That is not decoration: on a
+31-column title the repeated word is precisely what pushes the row past the limit
+and forces the count to be dropped — the wording was trimmed before the
+information was.
+
 ### Guestbook (operator)
 
 One board for the whole server, linked from the top of the page

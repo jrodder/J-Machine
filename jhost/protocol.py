@@ -653,10 +653,12 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None):
                 pieces.append(GREEN + f"{g.won} finished" + RESET)
             if g.explorers > 1 and g.last_player_turns:
                 # a game's total hides a long solo run
-                pieces.append(CLAY + f"last player {g.last_player_turns:,} "
-                              + plural(g.last_player_turns, "move", "moves")
+                # No unit repeated: every numeric piece on this row counts
+                # moves already, and the word is the difference between showing
+                # the number and shedding it on a long title.
+                pieces.append(CLAY + f"last player {g.last_player_turns:,}"
                               + RESET)
-            pieces.append(GREY + "last " + ago(g.last_move, now) + RESET)
+            pieces.append(GREY + ago(g.last_move, now) + RESET)
             label = (names or {}).get(stem, stem)
             keep = pieces[:]
             while True:
