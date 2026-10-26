@@ -125,5 +125,13 @@ class Health(unittest.TestCase):
         self.assertIs(health["transport_configured"], True)
 
 
+    def test_the_activity_page_counters_reach_health(self):
+        # Both halves, because the failure half is the point: RNS swallows a
+        # handler that raises, so "nobody clicked it" and "it is broken" look
+        # identical unless the page counts its own requests and its own errors.
+        health = self.host(PUBLIC).readiness()
+        for key in ("stats_requests", "stats_errors", "last_stats"):
+            self.assertIn(key, health)
+
 if __name__ == "__main__":
     unittest.main()

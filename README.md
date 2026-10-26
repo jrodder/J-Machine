@@ -174,6 +174,31 @@ pass through untouched. Keep `[logging] loglevel = 5` in the RNS config — the
 scaffold writes 5 for new hosts; 6 (DEBUG) is another 109,892 lines a month of
 RNS housekeeping, mostly known-destination cleaning.
 
+### The activity page (operator)
+
+The main page stays a game list with one thin odometer bar; the breakdown lives
+one link away at `/page/stats.mu` — a third path on the same page destination, so
+no new identity and no extra announce. It renders per request from the same slot
+scan the main page uses, plus a bounded read of the ledger (256 KB of tail, not
+the whole file).
+
+Sections: server totals, per game (played games only, most recent first, with
+the newest player's own move count — a game's total hides a long solo run),
+recent days, and replies. Two rules hold it honest. A section with nothing to say
+is omitted rather than rendered as a zero, because a number that appears, vanishes
+and reappears lower reads as a fault. And the reply counts carry their own window
+label (`since 26 Oct 13:55`) because the ledger is size-rotated — an unlabelled
+count would read as all-time and then quietly shrink, `jhost/window.py` reports
+how far back it actually reached and whether the byte cap left records unread.
+
+Nothing on the page names a player. The save tree could attribute every number to
+a destination hash, and a hash is a persistent handle on a person, so the page
+carries aggregates only (pinned by a test that fails if a 32-hex string appears).
+Real titles are long — "Sherlock: The Riddle of the Crown Jewels" is 40 columns —
+so a game line sheds its pieces rather than wrapping into what reads as two games:
+recency goes first (the list is sorted by it and Recent days repeats it), then the
+newest player's count, then finishes; moves and players never drop.
+
 ### Guestbook (operator)
 
 One board for the whole server, linked from the top of the page

@@ -17,10 +17,12 @@ import RNS
 from LXMF import LXMessage, LXMRouter
 
 from . import guestbook
+from . import window
 from .ledger import Ledger
 from .logs import LogFilter
 from .protocol import (DEST_JSON, FileSaveStore, handle_message,
-                       player_stats, render_page, write_rns_config)
+                       player_stats, render_page, render_stats,
+                       write_rns_config)
 
 
 # Re-announce cadence default: 60 min (spec §3). RNS rate-limits announce
@@ -59,9 +61,11 @@ def fresh_stats():
     """The health counters' shape, defined once so a running host and a bare
     one assembled without __init__ can never disagree about the keys."""
     stats = {"inbound": 0, "page_requests": 0, "page_errors": 0,
+             "stats_requests": 0, "stats_errors": 0,
              "guest_requests": 0, "guest_posts": 0, "file_requests": 0,
              "announce_cycles": 0, "poll_cycles": 0, "last_inbound": None,
-             "last_page": None, "last_announce": None, "last_poll": None}
+             "last_page": None, "last_stats": None,
+             "last_announce": None, "last_poll": None}
     for outcome in OUTCOMES:
         stats[outcome] = 0
     return stats
@@ -148,6 +152,11 @@ class Host:
         # posting and viewing need no new identity and no extra announce
         self.page_dest.register_request_handler(
             "/page/guestbook.mu", self._guest_handler,
+            allow=RNS.Destination.ALLOW_ALL)
+        # third path on the same page destination (no new identity, no new
+        # announce): the activity breakdown the main page leaves off
+        self.page_dest.register_request_handler(
+            "/page/stats.mu", self._stats_handler,
             allow=RNS.Destination.ALLOW_ALL)
 
         for story in sorted(self.games_dir.glob("*.z[3458]")):
@@ -307,7 +316,36 @@ class Host:
         manuals = {s: f"{page_hex}:/file/{s}.pdf" for s in self.manuals}
         return render_page(self.name, games, stats, manuals=manuals,
                            guestbook=f"{page_hex}:/page/guestbook.mu",
-                           names=self.names)
+                           names=self.names,
+                           stats_page=f"{page_hex}:/page/stats.mu")
+
+    def _stats_handler(self, path, request_data, request_id,
+                       remote_identity, requested_at):
+        """The activity page: totals, per game, recent days, and what happened
+        to the replies. Rendered per request like the page and the board, and
+        counted, because a link that returns nothing is indistinguishable from
+        a node that is not answering (see _page_handler).
+
+        The reply counts label their own window: the ledger is size-rotated, so
+        an unlabelled count would read as all-time and then quietly shrink."""
+        self.stats["stats_requests"] += 1
+        self.stats["last_stats"] = time.time()
+        try:
+            ledger = self.ledger.path
+            page_hex = RNS.hexrep(self.page_dest.hash, delimit=False)
+            return render_stats(
+                self.name, player_stats(self.store.root),
+                activity=window.activity([ledger.with_name(ledger.name + ".1"),
+                                          ledger]),
+                back=f"{page_hex}:/page/index.mu",
+                names=self.names).encode()
+        except Exception as e:
+            # same reason _page_handler counts: RNS swallows a handler that
+            # raises, so a broken stats page would look like nobody reading it
+            self.stats["stats_errors"] += 1
+            print(f"jhost: stats page render failed ({type(e).__name__}: {e})",
+                  file=sys.stderr)
+            raise
 
     def _guest_handler(self, path, request_data, request_id,
                        remote_identity, requested_at):

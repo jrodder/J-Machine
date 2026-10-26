@@ -12,6 +12,7 @@ Zork turns, growing every turn), the link it rides is the link that fails,
 and the recovery it existed for is already covered by the first-contact
 batch, which is rendered from the save slot (spec §5).
 """
+import re
 import dataclasses
 import json
 import os
@@ -454,7 +455,8 @@ MAPPER_LINK = (VIOLET + "`[Droid-Mapper (Android map helper)`"
                + "https://github.com/jrodder/Droid-Mapper]" + RESET)
 
 
-def render_page(name, games, stats, manuals=None, guestbook=None, names=None):
+def render_page(name, games, stats, manuals=None, guestbook=None,
+              names=None, stats_page=None):
     """Micron page text (spec §6). games = [(stem, addr_str)];
     addr_str = pretty hexrep of the game's lxmf.delivery destination hash.
     stats = player_stats(...) — cumulative counts + last-move recency: one
@@ -472,6 +474,8 @@ def render_page(name, games, stats, manuals=None, guestbook=None, names=None):
     url = lxmf@<32-hex-hash> (meshchat/Sideband open a conversation).
     guestbook = the page-destination URL of the guestbook board; when given,
     one link line to it sits in the top section, under the odometer bar.
+    stats_page = the same for the activity page; this page stays a game list
+    and one thin odometer bar, and the breakdown lives one link away.
     names = {stem: display title} from games/names.txt; a stem with no entry
     shows its stem. Multi-word titles are safe for the parse contract because
     a '> ' line only counts as a game when the line under it is an lxmf
@@ -479,8 +483,7 @@ def render_page(name, games, stats, manuals=None, guestbook=None, names=None):
     The page footer links the Android mapper (Droid-Mapper): a plain
     https:// link target — meshchat's onNodePageUrlClick opens http(s)
     targets in a new browser tab (NomadNetworkPage.vue, verified)."""
-    def plural(n, one, many):
-        return one if n == 1 else many
+    # plural() is at module level: the activity page counts the same words.
     # Odometer bar: what only ever accumulates (moves fed, players seen,
     # runs finished) rather than a window that reads empty most of the day.
     # The players piece always shows (a new node's honest 0); the other two
@@ -523,6 +526,10 @@ def render_page(name, games, stats, manuals=None, guestbook=None, names=None):
                      + GREY + " · " + RESET
                      + MAPPER_LINK)
         lines.append(DIV)   # a rule separates more strongly than a blank line
+    if stats_page:
+        lines.append(BAR_BOARD + "📊 `[Activity & stats)`" + stats_page + "]"
+                     + CLOSE_BAR)
+        lines.append(DIV)
     lines.append(BAR_SECTION + "Games" + CLOSE_BAR)
     for stem, addr in games:
         # the bare '> name' line is jclient's parse anchor (spec §7): the
@@ -568,6 +575,143 @@ def render_page(name, games, stats, manuals=None, guestbook=None, names=None):
     return "\n".join(lines) + "\n"
 
 
+def plural(n, one, many):
+    return one if n == 1 else many
+
+
+ROW_WIDTH = 74            # one screen row per game; see _plain
+MICRON_TAG = re.compile("`[BF]" + "[0-9a-f]{3}" + "|`" + "[!bf]" + "|`")
+
+
+def _plain(text):
+    """Length of a line as a terminal will lay it out, i.e. with the micron
+    formatting stripped. Wrapping is judged on this, never on len() of the
+    marked-up string."""
+    return MICRON_TAG.sub("", text)
+
+
+def _day_label(day):
+    """'2026-10-26' -> '26 Oct'. Micron has no date formatting (see ago())."""
+    try:
+        return time.strftime("%d %b", time.strptime(day, "%Y-%m-%d"))
+    except ValueError:
+        return day
+
+
+def render_stats(name, stats, activity=None, back=None, names=None, now=None):
+    """The activity page (spec §6): the per-game and per-day breakdown that is
+    too long for the main page, one link away. Pure, rendered per request like
+    the page and the board, so there is nothing to invalidate.
+
+    Sections, most useful first, each omitted when it has nothing to say (the
+    main page's rule: a number that appears, vanishes and reappears reads as a
+    fault). activity is window.activity(...) over the ledger, or None when the
+    ledger has nothing to read.
+
+    No player is named and no hash appears: the save tree could attribute every
+    one of these numbers to an identity, and a destination hash is a persistent
+    handle on a person, so this page reports aggregates only. The one exception
+    is deliberate — 'last player 58 moves' is a single slot's count, but it is
+    not tied to any identity shown."""
+    now = time.time() if now is None else now
+    lines = [BAR_TITLE + name + " — activity" + CLOSE_BAR, DIV]
+    # Same rule as the main page's odometer bar: players shows its honest 0 on
+    # a new node, and a count that would read 0 appears only once it is real —
+    # a number that appears, vanishes and reappears lower reads as a fault.
+    bar = []
+    if stats.turns:
+        bar.append(GOLD + f"{stats.turns:,} "
+                   + plural(stats.turns, "move", "moves") + RESET)
+    bar.append(TEAL + f"{stats.total:,} "
+               + plural(stats.total, "player", "players") + RESET)
+    if stats.won:
+        bar.append(GREEN + f"{stats.won:,} finished" + RESET)
+    recent = max(((g.last_move, stem) for stem, g in stats.per_game.items()
+                  if g.last_move), default=None)
+    if recent:
+        bar.append(GREY + "last move " + ago(recent[0], now) + RESET)
+    lines.append(BAR_ODOMETER + " · ".join(bar) + CLOSE_BAR)
+
+    played = sorted(((stem, g) for stem, g in stats.per_game.items()
+                     if g.last_move), key=lambda kv: -kv[1].last_move)
+    if played:
+        lines.append(DIV)
+        lines.append(BAR_SECTION + "By game" + CLOSE_BAR)
+        for stem, g in played:
+            parts = [GOLD + f"{g.turns:,} "
+                     + plural(g.turns, "move", "moves") + RESET,
+                     TEAL + f"{g.explorers} "
+                     + plural(g.explorers, "player", "players") + RESET]
+            # One screen row per game, and real titles are long ("Sherlock: The
+            # Riddle of the Crown Jewels" is 40 columns), so the pieces have to
+            # be droppable rather than hopeful. They are listed least-dispensable
+            # last and shed from the end: recency first (the list is already
+            # sorted by it and 'Recent days' says it again), then the newest
+            # player's count, then finishes. Moves and players never drop.
+            pieces = []
+            if g.won:
+                pieces.append(GREEN + f"{g.won} finished" + RESET)
+            if g.explorers > 1 and g.last_player_turns:
+                # a game's total hides a long solo run
+                pieces.append(CLAY + f"last player {g.last_player_turns:,} "
+                              + plural(g.last_player_turns, "move", "moves")
+                              + RESET)
+            pieces.append(GREY + "last " + ago(g.last_move, now) + RESET)
+            label = (names or {}).get(stem, stem)
+            keep = pieces[:]
+            while True:
+                row = ("  " + AMBER + label + RESET + "  "
+                       + " · ".join(parts + keep))
+                if len(_plain(row)) <= ROW_WIDTH or not keep:
+                    break
+                keep = keep[:-1]
+            lines.append(row)
+
+    if activity is not None and activity.since:
+        days = sorted(activity.per_day, reverse=True)[:7]
+        if days:
+            lines.append(DIV)
+            lines.append(BAR_SECTION + "Recent days" + CLOSE_BAR)
+            for d in days:
+                per_game = activity.per_day[d]
+                n = sum(per_game.values())
+                detail = ", ".join(f"{g} {c}" for g, c in sorted(
+                    per_game.items(), key=lambda kv: (-kv[1], kv[0]))[:4])
+                row = ("  " + AMBER + _day_label(d) + RESET + "  "
+                       + GOLD + f"{n} " + plural(n, "move", "moves") + RESET)
+                if detail:
+                    row += GREY + "  " + detail + RESET
+                lines.append(row)
+
+        # Replies carry their own window, because the ledger is size-rotated:
+        # an unlabelled count would read as all-time and quietly shrink.
+        o = activity.outcomes
+        answered = o.get("delivered", 0) + o.get("propagated", 0)
+        unanswered = (o.get("failed", 0) + o.get("dropped", 0)
+                      + o.get("abandoned", 0))
+        rows = [GREEN + f"{answered} "
+                + plural(answered, "reply delivered", "replies delivered")
+                + RESET,
+                CLAY + f"{unanswered} unanswered" + RESET]
+        if activity.in_flight:
+            rows.append(GREY + f"{activity.in_flight} in flight" + RESET)
+        lines.append(DIV)
+        lines.append(BAR_SECTION + "Replies" + CLOSE_BAR)
+        lines.append("  " + GREY + "since "
+                     + time.strftime("%d %b %H:%M",
+                                     time.localtime(activity.since))
+                     + RESET + "  " + " · ".join(rows))
+        if activity.truncated:
+            lines.append("  " + GREY + "(the most recent turns only)" + RESET)
+
+    if back:
+        lines.append(DIV)
+        lines.append(BAR_BOARD + "`[Back to the game list)`" + back + "]"
+                     + CLOSE_BAR)
+    return "\n".join(lines) + "\n"
+
+
+
 @dataclasses.dataclass
 class GameStats:
     """One game's numbers, read off the save tree per page request.
@@ -578,6 +722,9 @@ class GameStats:
     won: int = 0
     turns: int = 0
     last_move: float = 0.0
+    # the move count of the player whose slot is newest in this game: a game's
+    # total hides a long solo run, and the stats page wants both (spec §6)
+    last_player_turns: int = 0
 
 
 @dataclasses.dataclass
@@ -606,7 +753,10 @@ def player_stats(saves_root):
         g.explorers += 1
         g.turns += _count(m.get("turns")) or 1
         g.won += 1 if m.get("won") else 0
-        g.last_move = max(g.last_move, p.stat().st_mtime)
+        mtime = p.stat().st_mtime
+        if mtime >= g.last_move:
+            g.last_move = mtime
+            g.last_player_turns = _count(m.get("turns")) or 1
         identities.add(p.stem)
     derived = sum(g.turns for g in per_game.values())
     path = _moves_path(saves_root)
