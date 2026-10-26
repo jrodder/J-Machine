@@ -63,14 +63,26 @@ as_root tee "$UNIT_PATH" >/dev/null <<EOF
 Description=J-Machine Reticulum game host
 After=network-online.target
 Wants=network-online.target
+# Bounded on purpose. Every start announces the page and every game, and RNS
+# blocks a destination from rebroadcast for about an hour when it announces
+# faster than ~1/hour -- an unbounded restart loop therefore makes the node
+# unreachable, which looks exactly like the failure it is chasing.
+StartLimitIntervalSec=3600
+StartLimitBurst=6
 
 [Service]
 Type=simple
 User=$RUN_USER
 WorkingDirectory=$REPO_ROOT
 ExecStart=$VENV/bin/python -u -m jhost games/ --data-dir data/
-Restart=on-failure
-RestartSec=5
+# always, not on-failure: on-failure leaves the service down forever after a
+# clean exit (a SystemExit, an interpreter that returns 0). The failure this
+# protects against is the quiet kind -- a torn-down RNS interface cannot be
+# reopened without a new process ("Restart Reticulum to attempt to open this
+# interface again", RNS TCPInterface.py:437), and the process stays "active"
+# the whole time it is deaf.
+Restart=always
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target
@@ -86,8 +98,12 @@ as_root systemctl restart jhost.service
 echo "== waiting for the host to come up (up to 60s)..."
 for _ in $(seq 1 60); do
     [ -f "$DEST" ] && break
-    if ! as_root systemctl is-active --quiet jhost.service; then
-        echo "error: jhost.service is not active — journal tail:" >&2
+    state="$(as_root systemctl is-active jhost.service || true)"
+    if [ "$state" = "failed" ] || [ "$state" = "inactive" ]; then
+        # "activating" is not a failure: with RestartSec=30 a crashed host sits
+        # in that state for half a minute before the retry, and bailing here
+        # would report a healthy unit as broken
+        echo "error: jhost.service is $state — journal tail:" >&2
         as_root journalctl -u jhost.service -n 30 --no-pager >&2 || true
         exit 1
     fi
@@ -109,6 +125,12 @@ echo "  1. (optional) edit $RNS_CFG to toggle testnet hubs, then:"
 echo "     sudo systemctl restart jhost"
 echo "  2. Share the page hash above out-of-band so NomadNet users can browse it."
 echo "  3. Logs: journalctl -u jhost -f"
+echo "  4. (strongly recommended) add --propagation-node <hash> to ExecStart in"
+echo "     $UNIT_PATH. A player whose client cannot link to this host stores the"
+echo "     turn at a propagation node; without a node named here the host both"
+echo "     drops failed replies and never collects what a node is holding for it."
+echo "  5. Read data/health.json (interfaces, reachability, disk, outcomes) and"
+echo "     data/ledger.jsonl (one named outcome per inbound message)."
 echo
 echo "Note: these are fresh addresses (identities are generated here). To keep"
 echo "the old node's addresses and player save slots, copy its data/ over before"

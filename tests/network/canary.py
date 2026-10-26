@@ -185,6 +185,31 @@ def parsed_games(page_text):
     return out
 
 
+def check_ledger(data_dir, played):
+    """The record is part of the player path: if five turns went in and the
+    ledger does not show five turns ended, the thing that is supposed to tell
+    us a player was served is not telling us anything. Only our own part is
+    required (handed_off and later) — whether the mesh delivered is a separate,
+    slower answer and is not this probe's business."""
+    path = Path(data_dir) / "ledger.jsonl"
+    try:
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+    except OSError as e:
+        raise RuntimeError(f"no ledger at {path} ({e})") from None
+    opened = [r["s"] for r in rows if r.get("state") == "open"]
+    ended = {r["s"] for r in rows if r.get("state") != "open"}
+    unresolved = [s for s in opened if s not in ended]
+    ours = [r for r in rows if r.get("state") in ("handed_off", "delivered",
+                                                  "propagated")]
+    if len(opened) < played:
+        raise RuntimeError(f"{len(opened)} turns recorded, {played} played")
+    if unresolved:
+        raise RuntimeError(f"{len(unresolved)} turns never closed: {unresolved}")
+    if len(ours) < played:
+        raise RuntimeError(f"only {len(ours)} of {played} turns reached an "
+                           f"outcome")
+
+
 # --------------------------------------------------------------------- play
 def _pump(pipe, state, cond, log):
     """Copy everything the client prints into state["buf"] (and the log, for
@@ -270,12 +295,12 @@ def play_turns(game_addr, work, port, done, host):
 def probe(work, done):
     """host -> page -> turns. Returns the per-turn timings."""
     port = free_port()
-    host = None
+    host, data_dir = None, work / "host"
     t0 = time.time()
     try:
         with stage("host", done):
             host, dests = start_host(make_games_dir(work / "games"),
-                                     work / "host", port)
+                                     data_dir, port)
         with stage("page", done):
             page = fetch_page(dests["page"], work / "client", port)
             games = parsed_games(page)
@@ -288,6 +313,8 @@ def probe(work, done):
                                    f"{dests['games'][GAME]}")
         with stage("turns", done):
             times = play_turns(games[GAME], work / "player", port, done, host)
+        with stage("ledger", done):
+            check_ledger(data_dir, len(times))
         print(f"canary: {len(times)} turns in {time.time() - t0:.1f}s ("
               + ", ".join(f"{t:.1f}s" for t in times) + ")", file=sys.stderr)
         return times

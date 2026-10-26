@@ -135,6 +135,13 @@ either one ever leaves. `delivered` means the transfer completed into the
 player's side, not that a person read it; their next command is the only proof of
 that. Rotated by size, so it cannot fill the disk it is recording.
 
+`data/health.json` is rewritten every minute: interfaces online, whether the
+config has any transport a stranger could actually use (a scaffolded or wiped
+config is loopback-only — the node announces and serves its page to itself and
+is invisible to everyone, which looks healthy from every other angle), whether
+the save store is writable, free disk, story files that disappeared after
+startup, and the outcome counters, whose names are the ledger states.
+
 `data/host-destinations.json` remains the operator record of what addresses to
 tell people about.
 
@@ -174,3 +181,20 @@ To try it from a terminal: `python3 -m jclient browse <page-hash> --path
 (RNS rig: page discovery, 10-command dfrotz byte-parity over the wire,
 reconnect byte-identity, two players, in-game save/restore). Network
 gates skip when `rns`/`lxmf` are not installed.
+
+### Canary
+
+`scripts/canary.sh` asks the one question health cannot: does a player actually
+get served? It starts a throwaway `jhost` on a fresh temp data dir and loopback
+port, fetches the NomadNet page over the same RNS request path a real visitor
+uses, checks the game addresses the page advertises against the ones the host
+is serving, plays five real Zork I turns through `jclient play`, and confirms
+each turn produced a reply and reached an outcome in the ledger. One line out,
+exit 0 only if the whole path worked; every wait is bounded and everything it
+starts is torn down even if the canary is killed. `CANARY_KEEP=1` leaves the
+temp logs for a post-mortem. It is a systemd-timer-shaped command, not a unit
+test (it is slow and needs LXMF).
+
+What it cannot prove is the thing no on-box check can: that the public mesh can
+reach this host, or that a human read a reply. A green canary means "this
+machine serves a player correctly when one arrives over loopback".

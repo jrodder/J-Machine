@@ -49,6 +49,7 @@ class ReplyFallback(unittest.TestCase):
         self.addCleanup(setattr, host, "LXMessage", real)
         host.LXMessage = Fake
         self.host = object.__new__(host.Host)   # no Reticulum, no filesystem
+        self.host.stats = host.fresh_stats()
         self.host.destinations = {"zork1": "GAME-DEST"}
         self.host.ledger = Ledger(Path(self.d.name) / "ledger.jsonl")
         self.host.routers = {"zork1": type("R", (), {

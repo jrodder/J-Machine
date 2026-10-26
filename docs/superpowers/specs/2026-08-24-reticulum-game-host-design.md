@@ -223,6 +223,24 @@ Global (shared by all games): session map {(game, player_hexhash): Session}
   blocks the destination from rebroadcast for an hour — so faster *hurts*
   visibility (meshchat stops seeing the node). 60 min is the fastest safe
   default.
+- **Readiness is checked, not inferred from traffic (2026-10-26).** `run()`
+  rewrites `data/health.json` on a 60 s tick: interface counts, whether the
+  *config* contains any transport a stranger could use, whether the save store
+  is writable, free disk, story files that vanished after startup, session
+  count, open ledger turns, and the outcome counters (whose names are the ledger
+  states verbatim, so a counter and a ledger line cannot disagree). The page,
+  guestbook and manual handlers count requests and record render failures, so
+  "the page is live but a player gets nothing" is two different observable
+  things rather than one guess. These are capability checks on purpose: from
+  traffic alone, a healthy idle node is indistinguishable from a broken one.
+  **`transport_configured` exists for one specific failure:** the scaffolded
+  first-run config is loopback-only, and such a node announces, serves its page
+  to itself and is invisible to everyone — healthy process, printed addresses,
+  nothing reachable. The check reads the config rather than RNS internals, so it
+  answers "could a stranger reach this node at all" without pretending to know
+  the route table. What health deliberately does not contain: whether the mesh
+  can reach this host, or whether anyone read a reply. No inside view exists of
+  either, and a health file implying one would be the worst kind of green light.
 - **Every inbound message ends in a named outcome (2026-10-26).** `jhost/ledger.py`
   appends `data/ledger.jsonl`: one `open` line written before any work on a
   message, then terminal lines — `handed_off` (where the host's own responsibility
@@ -577,6 +595,19 @@ repeats a word is noise.
 reply) — unit-testable with fakes, no RNS import, milliseconds each, zero flake.
 The network suite exists only to prove what RNS/LXMF touch: announce → recall →
 delivery → reply, across a real transport.
+
+**The canary** (`tests/network/canary.py`, `scripts/canary.sh`, 2026-10-26): a
+probe rather than a test, for a systemd timer. It composes the rig's pieces into
+the whole player path on one machine — host starts, page is fetched over the RNS
+request path, the addresses the page advertises are compared with the ones the
+host is serving, five real Zork I turns go through `jclient play`, each must
+produce a reply, and the ledger must show every one of them reaching an outcome.
+Exactly one line out (`canary OK page=1 turns=5/5 …` / `canary FAIL stage=…`),
+exit status the only other signal, every wait bounded, and process-group teardown
+with `PR_SET_PDEATHSIG` so nothing outlives it even on SIGKILL. Slow (tens of
+seconds), so it is not part of the unit suite. It cannot prove the public mesh can
+reach the host, and it does not pretend to: that is the irreducible outside
+vantage (§3).
 
 **The rig** (`tests/network/netrig.py`): two OS processes, real RNS instances,
 loopback TCP pairing, temp data dirs. First contact is the announce path: host

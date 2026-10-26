@@ -6,6 +6,8 @@ address.
 # ponytail: global lock, per-session locks if throughput matters
 """
 import json
+import os
+import shutil
 import sys
 import threading
 import time
@@ -44,6 +46,24 @@ DEFAULT_PROPAGATION_PULL = 5 * 60
 # mid-download and a second request would reset the transfer progress.
 PR_IN_FLIGHT = range(1, 7)   # PR_PATH_REQUESTED .. PR_RESPONSE_RECEIVED
 RUN_TICK = 15                # run() resolution, independent of both cadences
+HEALTH_INTERVAL = 60         # data/health.json rewrite cadence
+
+# The outcome names are the ledger states verbatim, so a counter and a ledger
+# line can never disagree about what happened to a message.
+OUTCOMES = ("abandoned", "handed_off", "delivered", "propagated", "failed",
+            "dropped")
+
+
+def fresh_stats():
+    """The health counters' shape, defined once so a running host and a bare
+    one assembled without __init__ can never disagree about the keys."""
+    stats = {"inbound": 0, "page_requests": 0, "page_errors": 0,
+             "guest_requests": 0, "guest_posts": 0, "file_requests": 0,
+             "announce_cycles": 0, "poll_cycles": 0, "last_inbound": None,
+             "last_page": None, "last_announce": None, "last_poll": None}
+    for outcome in OUTCOMES:
+        stats[outcome] = 0
+    return stats
 
 
 class Host:
@@ -90,6 +110,10 @@ class Host:
                     self.names[stem.strip()] = shown.strip()
         # one durable outcome per inbound message (spec §3, jhost/ledger.py)
         self.ledger = Ledger(self.data_dir / "ledger.jsonl")
+        # current-state counters for data/health.json; the per-message detail
+        # is the ledger, this is the snapshot a check reads without parsing it
+        self.started = None
+        self.stats = fresh_stats()
         # guestbook log + operator denylist (spec §6): plain files under
         # data/, read per request, so pruning/moderating needs no restart
         self.gb_log = self.data_dir / "guestbook.jsonl"
@@ -138,12 +162,17 @@ class Host:
         each game's propagated mail on self.propagation_pull. start() already
         announced, so both timers start from now."""
         now = time.time()
+        self.started = now
         next_announce = now + self.announce_interval
         polling = bool(self.propagation_node and self.propagation_pull)
         next_pull = now if polling else None
+        next_health = now
         while True:
             time.sleep(RUN_TICK)
             now = time.time()
+            if now >= next_health:
+                self.write_health()
+                next_health = now + HEALTH_INTERVAL
             if now >= next_announce:
                 self._announce_all()
                 next_announce = now + self.announce_interval
@@ -165,6 +194,8 @@ class Host:
         and peering costs, not a default."""
         if self.propagation_node is None or not self.propagation_pull:
             return
+        self.stats["poll_cycles"] += 1
+        self.stats["last_poll"] = time.time()
         for stem in sorted(self.routers):
             router = self.routers[stem]
             if getattr(router, "propagation_transfer_state", 0) in PR_IN_FLIGHT:
@@ -223,19 +254,42 @@ class Host:
             # NomadnetFileDownloader). auto_compress off: PDFs are binary.
             # ponytail: no per-request path validation beyond the exact
             # registered path (the handler map IS the allow-list)
-            p = manual
-            name = manual.name
             self.page_dest.register_request_handler(
-                f"/file/{stem}.pdf",
-                lambda path, data, rid, remote, requested_at:
-                    [open(p, "rb"), {"name": name.encode()}],
+                f"/file/{stem}.pdf", self._manual_handler(manual),
                 allow=RNS.Destination.ALLOW_ALL, auto_compress=False)
             self.manuals[stem] = manual
+
+    def _manual_handler(self, manual):
+        def handler(path, data, request_id, remote_identity, requested_at):
+            # the 5-parameter shape is required (RNS inspects the signature);
+            # the response is the canonical NomadNet serve_file shape
+            self.stats["file_requests"] += 1
+            if not manual.exists():
+                # registered at startup, so this only happens if the file went
+                # away while running -- name it instead of a bare traceback
+                print(f"jhost: manual {manual.name} is gone from {manual}",
+                      file=sys.stderr)
+            return [open(manual, "rb"), {"name": manual.name.encode()}]
+        return handler
 
     def _page_handler(self, path, request_data, request_id,
                       remote_identity, requested_at):
         # RNS 1.5.0 response generators must take exactly 5 (or 6) params
         # (Link.handle_request inspects the signature — verified 1.5.0)
+        self.stats["page_requests"] += 1
+        self.stats["last_page"] = time.time()
+        try:
+            return self._render_page().encode()
+        except Exception as e:
+            # a page that fails to render otherwise looks exactly like a page
+            # nobody asked for -- and it is the one thing a first-time visitor
+            # uses, so count it and say it before RNS swallows it
+            self.stats["page_errors"] += 1
+            print(f"jhost: page render failed ({type(e).__name__}: {e})",
+                  file=sys.stderr)
+            raise
+
+    def _render_page(self):
         games = [(stem, RNS.prettyhexrep(d.hash))
                  for stem, d in sorted(self.destinations.items())]
         # page is rendered per request (spec §6): stats computed fresh from
@@ -248,7 +302,7 @@ class Host:
         manuals = {s: f"{page_hex}:/file/{s}.pdf" for s in self.manuals}
         return render_page(self.name, games, stats, manuals=manuals,
                            guestbook=f"{page_hex}:/page/guestbook.mu",
-                           names=self.names).encode()
+                           names=self.names)
 
     def _guest_handler(self, path, request_data, request_id,
                        remote_identity, requested_at):
@@ -262,12 +316,15 @@ class Host:
         remote_identity is None for most visitors while browsing (guestbook.py
         cites why), so an unidentified post is stored with who: null and reads
         as 'anon' — nobody gets turned away for not identifying."""
+        self.stats["guest_requests"] += 1
         note = None
         if isinstance(request_data, dict) and "field_message" in request_data:
             who = (RNS.hexrep(remote_identity.hash, delimit=False)
                    if remote_identity is not None else None)
             note = guestbook.post(self.gb_log, self.gb_ban, who,
                                   request_data.get("field_message"))
+        if note == "saved":
+            self.stats["guest_posts"] += 1
         return guestbook.render(
             self.name, RNS.hexrep(self.page_dest.hash, delimit=False),
             guestbook.entries(self.gb_log), note).encode()
@@ -281,6 +338,13 @@ class Host:
         if note != "saved":
             return guestbook.NOTES[note]
         return f"{guestbook.NOTES[note]} #{sender[:guestbook.TAG]}"
+
+    def _record(self, seq, state, **fields):
+        """The only place a message outcome is written: the ledger line and
+        the health counter come from one call, so they cannot disagree."""
+        self.ledger.close(seq, state, **fields)
+        if state in OUTCOMES:
+            self.stats[state] += 1
 
     def _on_message(self, stem, msg):
         """One inbound message, from arrival to recorded outcome.
@@ -299,11 +363,12 @@ class Host:
             return
         short = sender[:guestbook.TAG]
         seq = self.ledger.open(stem, short)
+        self.stats["inbound"] += 1
+        self.stats["last_inbound"] = time.time()
         try:
             self._serve(stem, sender, short, msg, seq)
         except Exception as e:
-            self.ledger.close(seq, "abandoned",
-                              why=f"{type(e).__name__}: {e}")
+            self._record(seq, "abandoned", why=f"{type(e).__name__}: {e}")
             print(f"jhost: {stem}/{short}: message failed before any reply "
                   f"({type(e).__name__}: {e})", file=sys.stderr)
 
@@ -337,8 +402,8 @@ class Host:
             RNS.Transport.await_path(msg.source_hash, timeout=15)
             src = RNS.Identity.recall(msg.source_hash)
         if src is None:
-            self.ledger.close(seq, "abandoned", bytes_in=n_in,
-                              why="no_recalled_identity")
+            self._record(seq, "abandoned", bytes_in=n_in,
+                         why="no_recalled_identity")
             print(f"jhost: {stem}/{short}: cannot recall sender for reply "
                   f"(path request failed); turn not played", file=sys.stderr)
             return
@@ -371,8 +436,8 @@ class Host:
         self.routers[stem].handle_outbound(m)
         # our own boundary ends here; what the mesh does with it is a second,
         # later line (§3: what can be certified and what cannot)
-        self.ledger.close(seq, "handed_off", bytes_in=n_in,
-                          bytes_out=len(payload))
+        self._record(seq, "handed_off", bytes_in=n_in,
+                     bytes_out=len(payload))
 
     def _settled(self, stem, short, seq, m):
         """LXMF's terminal signal for a reply. DELIVERED (state 0x08) is the
@@ -387,8 +452,8 @@ class Host:
             state = "rejected"
         else:
             state = f"concluded_{m.state}"
-        self.ledger.close(seq, state,
-                          attempts=getattr(m, "delivery_attempts", None))
+        self._record(seq, state,
+                     attempts=getattr(m, "delivery_attempts", None))
 
     def _reply_failed(self, stem, short, dest, payload, seq, m=None):
         """LXMF drops a reply once its direct attempts run out (only a debug
@@ -397,9 +462,9 @@ class Host:
         the player."""
         print(f"jhost: {stem}: reply to {short} lost over link",
               file=sys.stderr)
-        self.ledger.close(seq, "failed", why="link_delivery_failed",
-                          bytes_out=len(payload),
-                          attempts=getattr(m, "delivery_attempts", None))
+        self._record(seq, "failed", why="link_delivery_failed",
+                     bytes_out=len(payload),
+                     attempts=getattr(m, "delivery_attempts", None))
         # LXMF keeps reusing a link the peer abandoned ("Using available direct
         # link" + "Waiting for proof" for an hour, in the log), so every later
         # reply to that player queues behind a link that can never deliver.
@@ -412,7 +477,7 @@ class Host:
             except Exception:
                 pass
         if self.propagation_node is None:
-            self.ledger.close(seq, "dropped", why="no_propagation_node")
+            self._record(seq, "dropped", why="no_propagation_node")
             print(f"jhost: {stem}: no --propagation-node set; reply dropped",
                   file=sys.stderr)
             return
@@ -424,13 +489,13 @@ class Host:
         try:
             self.routers[stem].handle_outbound(m)
         except OSError as e:
-            self.ledger.close(seq, "dropped",
-                              why=f"propagation_handoff_{type(e).__name__}")
+            self._record(seq, "dropped",
+                         why=f"propagation_handoff_{type(e).__name__}")
             print(f"jhost: {stem}: propagation handoff failed ({e})",
                   file=sys.stderr)
 
     def _propagation_lost(self, stem, short, seq):
-        self.ledger.close(seq, "dropped", why="propagation_failed")
+        self._record(seq, "dropped", why="propagation_failed")
         print(f"jhost: {stem}: reply to {short} lost via propagation too",
               file=sys.stderr)
 
@@ -439,6 +504,8 @@ class Host:
         # operator's proof the re-announce cycle (and the startup announce)
         # is actually firing
         print("jhost: announcing page + games", file=sys.stderr)
+        self.stats["announce_cycles"] += 1
+        self.stats["last_announce"] = time.time()
         self.page_dest.announce(app_data=self.name.encode())
         for stem, d in self.destinations.items():
             # router.announce() carries the LXMF delivery app_data
@@ -450,3 +517,121 @@ class Host:
                "games": {s: RNS.prettyhexrep(d.hash)
                          for s, d in sorted(self.destinations.items())}}
         (self.data_dir / DEST_JSON).write_text(json.dumps(out, indent=1))
+
+    # ------------------------------------------------ readiness
+    def readiness(self):
+        """What has to be true for the next player to be served, checked
+        rather than assumed (spec §3).
+
+        Deliberately traffic-independent: from the message counters alone, a
+        healthy node with no players is indistinguishable from a broken one, so
+        these are capability checks, not rates. What is NOT here, on purpose:
+        whether the mesh can reach this host, and whether anyone read a reply.
+        There is no inside view of either, and a health file that implied one
+        would be the worst kind of green light."""
+        now = time.time()
+        interfaces = list(getattr(RNS.Transport, "interfaces", []))
+        online = [i for i in interfaces if getattr(i, "online", False)]
+        try:
+            free = shutil.disk_usage(self.data_dir).free
+        except OSError:
+            free = None
+        health = {
+            "t": round(now, 3),
+            "boot": self.ledger.boot,
+            "uptime": round(now - self.started, 1) if self.started else None,
+            "interfaces_total": len(interfaces),
+            "interfaces_online": len(online),
+            "transport_configured": self._transport_configured(),
+            "enable_transport": self._config_flag("enable_transport"),
+            "saves_writable": self._saves_writable(),
+            "disk_free_bytes": free,
+            "games": len(self.stories),
+            "games_missing_story": sorted(s for s in self.stories
+                                          if not self.stories[s].exists()),
+            "sessions": len(self.sessions),
+            "ledger_unresolved": len(self.ledger.unresolved()),
+        }
+        health.update(self.stats)
+        return health
+
+    def write_health(self):
+        """data/health.json, atomically. A failed write never disturbs the
+        service it is describing."""
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            tmp = self.data_dir / "health.json.tmp"
+            tmp.write_text(json.dumps(self.readiness(), indent=1))
+            os.replace(tmp, self.data_dir / "health.json")
+        except OSError as e:
+            print(f"jhost: health write failed ({e})", file=sys.stderr)
+
+    def _saves_writable(self):
+        probe = self.store.root / ".write-probe"
+        try:
+            probe.parent.mkdir(parents=True, exist_ok=True)
+            probe.write_text("ok")
+            probe.unlink()
+            return True
+        except OSError:
+            return False
+
+    def _config_lines(self):
+        try:
+            return (self.data_dir / "rns" / "config").read_text().splitlines()
+        except OSError:
+            return None
+
+    def _config_flag(self, key):
+        lines = self._config_lines()
+        if lines is None:
+            return None
+        for raw in lines:
+            name, _, value = raw.split("#")[0].partition("=")
+            if name.strip().lower() == key:
+                return value.strip().lower() in ("yes", "true", "1", "on")
+        return None
+
+    def _transport_configured(self):
+        """Is there any interface in the config a stranger could use?
+
+        The scaffolded first-run config is loopback-only on purpose, and says
+        so once, to stderr, at startup. Such a node announces, serves its page
+        to itself and is invisible to everyone else: healthy process, printed
+        addresses, nothing reachable. Nothing else about it looks wrong, which
+        is exactly why it is checked here."""
+        lines = self._config_lines()
+        if lines is None:
+            return False
+        for _name, opts in self._interface_sections(lines):
+            if opts.get("enabled", "yes") != "yes":
+                continue
+            if opts.get("type", "") == "tcpserverinterface":
+                # a loopback-only bind proves nothing about reachability
+                if opts.get("listen_ip", "127.0.0.1") not in (
+                        "127.0.0.1", "localhost", "::1"):
+                    return True
+            else:
+                # a TCP client link out is a way in as well, and anything else
+                # (RNode, Auto, UDP, Serial) is a real wire
+                return True
+        return False
+
+    @staticmethod
+    def _interface_sections(lines):
+        """[[Name]] blocks -> [(name, {key: value})]. RNS's own config parser
+        handles nested sections; this only reads what health needs, so it
+        stays a scanner and not a second parser."""
+        sections, current = [], None
+        for raw in lines:
+            line = raw.split("#")[0].strip()
+            if line.startswith("[[") and line.endswith("]]"):
+                current = {}
+                sections.append((line[2:-2].strip(), current))
+            elif line.startswith("["):
+                current = None
+            elif "=" in line and current is not None:
+                key, _, value = line.partition("=")
+                current[key.strip().lower()] = value.strip().lower()
+        return sections
+
