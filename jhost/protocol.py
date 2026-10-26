@@ -2,13 +2,15 @@
 fakes. Reply semantics (2026-08-25): the first-contact reply is the load/
 restore batch (+ that line's turn if the first message carried one) — all
 new data. Every reply after that carries ONLY the new turn's text (Error
-events inline as '[error] ...'); the chat scrollback is the transcript — the
-phone client (Sideband) renders each LXMF message as a bubble, so re-sending
-the accumulated text every turn would be O(n^2). The one exception: an empty
-message is a deliberate state re-fetch and returns the full cumulative
-transcript (recovery if the client's history was lost). A host restart is
-the only case where the transcript restarts (restored batch = prompt +
-status line; the phone's message history keeps the rest, spec §5).
+events inline as '[error] ...'); the chat scrollback is the player's own
+copy — the phone client (Sideband) renders each LXMF message as a bubble, so
+re-sending the accumulated text every turn would be O(n^2). Nothing is ever
+re-sent. An empty message gets the load/restore batch on first contact and
+one status line afterwards, never the accumulated text: a cumulative
+re-fetch is the largest transfer this stack makes (measured 19 kB after 120
+Zork turns, growing every turn), the link it rides is the link that fails,
+and the recovery it existed for is already covered by the first-contact
+batch, which is rendered from the save slot (spec §5).
 """
 import dataclasses
 import json
@@ -24,6 +26,10 @@ from zmach.events import (EndOfGame, Error, SaveFileError, StoryFileError,
 from zmach.session import Session
 
 INPUT_CAP = 200  # trust boundary: player lines are short (spec §4)
+
+STATUS = "{game}: turn {turns}. Type a command to continue."
+# The whole reply to an empty line on a warm session (spec §4). Bounded
+# by construction: no history is kept in memory or re-sent.
 
 
 def unpretty(s):
@@ -95,7 +101,6 @@ class FileSaveStore(SaveStore):
 @dataclasses.dataclass
 class GameState:
     session: Session
-    transcript: str  # cumulative Text since this session's load/restore
     # an in-game @save wrote the slot this session: the per-turn autosave
     # holds until @restore consumes it (spec §5 test 5 slot lifecycle: the
     # slot is written by the in-game save and rewritten by the autosave
@@ -236,13 +241,16 @@ def handle_message(game, sender, text, verified, sessions, store,
 
     First contact -> the load/restore batch (+ the line's turn if one was
     attached). Existing session, non-empty line -> ONLY the new turn's
-    rendered text (per-turn delta, spec §4). Empty message -> the full
-    cumulative transcript (state re-fetch).
+    rendered text (per-turn delta, spec §4). Empty message -> the batch on
+    first contact, one status line on a warm session; history is never
+    re-sent (spec §4).
 
     game      story stem (e.g. "zork1")
     sender    32-hex-char lxmf.delivery destination hash of the sender
-    text      message.content_as_string() (None -> ""); "again" on a finished
-              run starts a new run in the same slot (counters kept)
+    text      message.content_as_string() (None -> rejected: the content was
+              not valid UTF-8, and it must not land in the empty-message
+              branch); "again" on a finished run starts a new run in the same
+              slot (counters kept)
     verified  message.signature_validated
     sessions  {(game, sender): GameState}, mutated in place
     store     SaveStore
@@ -255,7 +263,7 @@ def handle_message(game, sender, text, verified, sessions, store,
     if not verified:
         return "[Rejected: unverified sender]"
     if text is None:
-        text = ""
+        return "[Rejected: message is not text]"
     if sign is not None and text[:5].lower() == "sign:":
         # the board rides the signing channel: LXMF has already proven
         # `sender`, which a page view never does (guestbook.py cites why)
@@ -263,9 +271,11 @@ def handle_message(game, sender, text, verified, sessions, store,
     key = (game, sender)
     st = sessions.get(key)
     first = st is None
+    batch = ""
     if st is None:
         try:
-            sessions[key] = st = _new_game(game, sender, story_path, store, seed)
+            st, batch = _new_game(game, sender, story_path, store, seed)
+            sessions[key] = st
         except (StoryFileError, OSError) as e:
             print(f"jhost: {game}/{sender[:8]}: story load failed ({e}); "
                   f"game unavailable", file=sys.stderr)
@@ -279,14 +289,16 @@ def handle_message(game, sender, text, verified, sessions, store,
             return _restart_run(game, sender, story_path, store, st, seed)
         return "[Game over]"
     if text == "":
-        return st.transcript
+        # Never a turn. First contact: the load/restore batch IS the current
+        # state, rendered by the story from the slot. Warm session: one status
+        # line. The accumulated text is never re-sent (spec §4).
+        return batch if first else STATUS.format(game=game, turns=st.turns)
     if len(text) > INPUT_CAP:
         return "[Input rejected: line too long (>200)]"
     events = st.session.input(text)
     delta = _render(events)
-    st.transcript += delta  # kept for the empty-message state re-fetch
     # Page odometer (spec §6): only a turn actually fed counts (rejections,
-    # [Game over] and state re-fetches returned above). The win flag latches
+    # [Game over] and empty-line status replies returned above). The win flag latches
     # here because the Z-machine's done flag is host-side (zmach/vm.py) and
     # is not part of the save image — this turn's EndOfGame is the only
     # evidence a run ever ended. Metadata is its own small file, so the
@@ -302,7 +314,7 @@ def handle_message(game, sender, text, verified, sessions, store,
         _autosave(store, game, sender, st.session)
     # first contact: the batch + this turn are all new -> send both.
     # afterwards: the delta only (the scrollback keeps the rest).
-    return st.transcript if first else delta
+    return (batch + delta) if first else delta
 
 
 def _new_game(game, sender, story_path, store, seed):
@@ -322,8 +334,7 @@ def _new_game(game, sender, story_path, store, seed):
         except SaveFileError as e:
             print(f"jhost: {game}/{sender[:8]}: save restore failed ({e}); "
                   f"fresh start", file=sys.stderr)
-    st.transcript = _render(batch)
-    return st
+    return st, _render(batch)
 
 
 def _restart_run(game, sender, story_path, store, st, seed):
@@ -337,9 +348,9 @@ def _restart_run(game, sender, story_path, store, st, seed):
     st.save_pending = False
     _install_handlers(s, st, store, game, sender)
     batch = s.load(str(story_path), seed=seed)
-    st.transcript = _render(batch)
+    reply = _render(batch)
     _autosave(store, game, sender, s)
-    return st.transcript
+    return reply
 
 
 def _install_handlers(s, st, store, game, sender):

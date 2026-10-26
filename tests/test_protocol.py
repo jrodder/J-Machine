@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 
 from jhost.protocol import (FileSaveStore, GameStats, INPUT_CAP, PlayerStats,
-                            ago, bump_moves, handle_message, player_stats,
-                            render_page,
+                            STATUS, ago, bump_moves, handle_message,
+                            player_stats, render_page,
                             write_rns_config)
 from tests.conformance.run_conformance import play_session_lines
 from tests.util import norm
@@ -149,8 +149,26 @@ class Protocol(unittest.TestCase):
         self.assertEqual(r, "[Game unavailable]")
         self.assertEqual(self.p.sessions, {})  # nothing stored, sender may retry
 
-    def test_existing_session_empty_line(self):
-        self.assertEqual(self.p.call(text=""), self.p.call(text=""))
+    def test_empty_line_gets_status_not_history(self):
+        """An empty line never re-sends history (spec §4): first contact gets
+        the load/restore batch, a warm session gets the one status line — so
+        the reply stays bounded no matter how long the run gets."""
+        r0 = self.p.call(text="")          # first contact: the batch
+        self.assertIn("open field", norm(r0))
+        for line in ["look", "north", "look"]:
+            self.p.call(text=line)
+        r = self.p.call(text="")
+        self.assertEqual(r, STATUS.format(game=self.p.game, turns=3))
+        self.assertNotIn("open field", norm(r),
+                         "an empty line must not re-send history")
+
+    def test_undecodable_content_is_rejected(self):
+        """content_as_string() -> None when the payload is not valid UTF-8.
+        That must be a rejection, not the empty-message branch (where it used
+        to trigger the largest reply the host can make)."""
+        self.assertEqual(self.p.call(text=None),
+                         "[Rejected: message is not text]")
+        self.assertEqual(self.p.sessions, {})   # no session, no turn
 
     def test_replies_are_per_turn_deltas(self):
         # Spec §4 (2026-08-25): a reply after first contact carries ONLY
@@ -192,7 +210,7 @@ class Protocol(unittest.TestCase):
         # risorg's in-game SAVE/RESTORE verbs -> host-local slot, no prompt.
         # Under seed 10 the intro fills the screen: load parks at the
         # ***MORE*** boundary. The protocol never feeds an empty line
-        # (empty = transcript-only reply), so one non-empty line is fed
+        # (empty = status reply), so one non-empty line is fed
         # to absorb the MORE pause before the first game verb reaches
         # the parser (the VM discards the line at the pause).
         p = P(story=RISORG)
@@ -381,7 +399,7 @@ class PlayerStatsTests(unittest.TestCase):
             self.assertEqual(p.store.load_meta(p.game, S1),
                              {"turns": 2, "won": False})
             p.sessions.clear()           # host restart
-            p.call(text="")              # re-fetch only: not a turn
+            p.call(text="")              # reconnect batch: not a turn
             self.assertEqual(p.store.load_meta(p.game, S1),
                              {"turns": 2, "won": False})
             p.call(text="look")
@@ -412,7 +430,7 @@ class PlayerStatsTests(unittest.TestCase):
         try:
             p.call(text="look", verified=False)     # rejected sender
             p.call(text="x" * (INPUT_CAP + 1))      # too long
-            p.call(text="")                          # state re-fetch
+            p.call(text="")                          # status line, no turn
             self.assertNotEqual(p.call(text="look"), "")
             self.assertEqual(p.store.load_meta(p.game, S1),
                              {"turns": 1, "won": False})

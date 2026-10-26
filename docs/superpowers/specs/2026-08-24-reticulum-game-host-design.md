@@ -253,8 +253,8 @@ on lxmf message M (game G, sender S = M.source_hash):
           → return
 
   if text == "":
-      → reply = full transcript so far (the state re-fetch — the only message
-        that carries accumulated text)
+      → reply = the load/restore batch on first contact; the one-line STATUS on
+        a warm session. Accumulated text is never re-sent (2026-10-26)
   else:
       validate: len(text) <= 200                    # input cap (player lines are short)
         fail → reply "[Input rejected: line too long (>200)]", session untouched
@@ -274,12 +274,24 @@ Notes:
   accumulated transcript every turn would make the chat O(n²) text. So after
   first contact the reply carries only the new turn's text — the chat
   scrollback IS the transcript, and the phone does the accumulating. First
-  contact still sends the full batch (all-new data), and an empty message
-  still returns the full transcript: that deliberate re-fetch is the recovery
-  path if the client's message history was ever lost (reinstall, wiped
-  conversation). A host restart is the one transcript reset (restored batch
-  is empty for a boundary save — §5), which is safe for the same reason: the
-  phone's scrollback already has everything before the boundary.
+  contact still sends the full batch (all-new data). A host restart is the
+  one scrollback reset (restored batch is empty for a boundary save — §5),
+  which is safe for the same reason: the phone's scrollback already has
+  everything before the boundary.
+- **No reply ever carries accumulated text (2026-10-26 change).** An empty
+  message used to return the full cumulative transcript as a "state re-fetch".
+  Removed. It was the largest transfer the host makes — measured 19 kB after
+  120 Zork I turns, growing ~160 B per turn and never pruning — and the
+  multi-packet link transfer it needs is exactly the one that fails on a phone
+  at the far end; a transfer stuck on a reused-but-dead link blocks every
+  later reply to that player. It also fired by accident: a payload that is not
+  valid UTF-8 parses to `None`, was coerced to `""`, and landed in the same
+  branch. The recovery it existed for is already covered by reconnecting,
+  which renders the load/restore batch from the save slot. An empty line now
+  gets that batch on first contact and the bounded `STATUS` line
+  (`"{game}: turn {turns}. Type a command to continue."`) on a warm session;
+  undecodable content is rejected as `[Rejected: message is not text]`. No
+  cumulative text is retained in memory at all.
 - **Output is uncapped.** Turn text of any size rides the link directly; beyond the
   link MDU RNS auto-chunks it as a Resource (verified §2). A 40-line room description
   is one packet over TCP, many chunks over LoRa — same client code.
@@ -393,7 +405,7 @@ reached a story's end — gets one small sidecar per player next to its slot,
 with the same temp + `os.replace` atomicity as the slot and never inside the
 image (`ZMSAVE v1` stays opaque, spec §7). The counters count only turns
 actually fed: an unverified sender, an over-long line, a `[Game over]`
-reply and the empty-message state re-fetch all return before any counting.
+reply and the empty-line status reply all return before any counting.
 The win flag latches on the turn that emits `EndOfGame`, because the story's
 end is otherwise unrecordable: the VM's `done` flag is host-side state and is
 not part of the save image, so restoring a finished player's image reports
