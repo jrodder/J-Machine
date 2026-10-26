@@ -26,6 +26,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -33,7 +34,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from tests.conformance.run_conformance import play_session_lines
-from tests.util import norm
+from tests.util import DFROTZ, norm
 
 WALK_PATH = Path(__file__).parent / "zork1_walk.txt"
 WALK = [l for l in WALK_PATH.read_text().splitlines() if l.strip()]
@@ -64,6 +65,8 @@ def walk_ours(n=None, seed=10):
 
 
 def walk_ref(n=None, seed=10):
+    if DFROTZ is None:
+        raise unittest.SkipTest("dfrotz (reference interpreter) not installed")
     lines = _walk_lines(n)
     script = []
     for l in lines:
@@ -73,7 +76,7 @@ def walk_ref(n=None, seed=10):
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "zork1.qzl").write_text("")
         p = subprocess.run(
-            ["/usr/games/dfrotz", "-t", "-s", str(seed), str(STORY)],
+            [DFROTZ, "-t", "-s", str(seed), str(STORY)],
             input="".join(l + "\n" for l in script) + "\x04",
             capture_output=True, text=True, cwd=d, timeout=120)
     # strip dfrotz's inline prompt echoes; the story's own "Ok." stays
