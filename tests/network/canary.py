@@ -15,6 +15,7 @@ failure can be read afterwards; it is printed in the FAIL line.
 import ctypes
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -156,11 +157,12 @@ def start_host(games, data_dir, port):
 
 
 # --------------------------------------------------------------------- page
-def fetch_page(page_addr, work, port):
-    """`jclient browse` is an RNS request for /page/index.mu on the page
-    destination — the path a real NomadNet visitor takes. Returns stdout."""
+def fetch_page(page_addr, work, port, path="/page/index.mu"):
+    """`jclient browse` is an RNS request for a path on the page destination —
+    the path a real NomadNet visitor takes. Returns stdout."""
     rc, out, _ = netrig.run_captured(
         [sys.executable, "-u", "-m", "jclient", "browse", page_addr,
+         "--path", path,
          "--data-dir", str(work), "--identity", str(work / "identity"),
          "--port", str(port)], "browse", work, timeout=PAGE_TIMEOUT)
     if rc != 0:
@@ -183,6 +185,30 @@ def parsed_games(page_text):
     if not out:
         raise RuntimeError("page parsed as zero games")
     return out
+
+
+def check_stats(stats_text, page_addr):
+    """The stats page has to arrive over the request path like any other page,
+    and arrive clean. The privacy rule says a player's destination hash never
+    appears on it; a unit test can only prove that about bytes this process
+    assembled, so over the wire is the half worth having.
+
+    The page's own address is allowed and expected -- the back link needs it, and
+    it is public by definition -- in either the delimited or the bare hex form
+    the host uses."""
+    if "activity" not in stats_text.lower():
+        raise RuntimeError("stats page has no activity heading")
+    if not re.search(r"\d+ moves", stats_text):
+        # the turns this canary just played should be visible: the ledger is the
+        # only place a turn carries a timestamp, so a page with no move count
+        # means the rollup is not reading what those turns wrote
+        raise RuntimeError("stats page shows no moves after played turns")
+    own = page_addr.strip("<>")
+    stripped = stats_text.replace(page_addr, "").replace(own, "")
+    leaked = re.search(r"[0-9a-f]{32}", stripped)
+    if leaked:
+        raise RuntimeError(f"stats page carries a 32-hex address: "
+                           f"{leaked.group(0)}")
 
 
 def check_ledger(data_dir, played):
@@ -293,7 +319,7 @@ def play_turns(game_addr, work, port, done, host):
 
 # -------------------------------------------------------------------- probe
 def probe(work, done):
-    """host -> page -> turns. Returns the per-turn timings."""
+    """host -> page -> turns -> ledger -> stats. Per-turn timings."""""
     port = free_port()
     host, data_dir = None, work / "host"
     t0 = time.time()
@@ -315,6 +341,12 @@ def probe(work, done):
             times = play_turns(games[GAME], work / "player", port, done, host)
         with stage("ledger", done):
             check_ledger(data_dir, len(times))
+        # after the turns, because the page reports activity: fetched before
+        # anyone played it would pass on an empty page
+        with stage("stats", done):
+            stats = fetch_page(dests["page"], work / "client2", port,
+                               path="/page/stats.mu")
+            check_stats(stats, dests["page"])
         print(f"canary: {len(times)} turns in {time.time() - t0:.1f}s ("
               + ", ".join(f"{t:.1f}s" for t in times) + ")", file=sys.stderr)
         return times
@@ -328,7 +360,7 @@ def main():
     try:
         try:
             times = probe(work, done)
-            print(f"canary OK page=1 turns={len(times)}/{len(TURNS)} "
+            print(f"canary OK page=1 stats=1 turns={len(times)}/{len(TURNS)} "
                   f"slowest={max(times):.1f}s total={time.time() - t0:.0f}s")
             return 0
         except Exception as e:
