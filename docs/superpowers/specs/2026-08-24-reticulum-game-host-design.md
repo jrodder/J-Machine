@@ -223,6 +223,46 @@ Global (shared by all games): session map {(game, player_hexhash): Session}
   blocks the destination from rebroadcast for an hour — so faster *hurts*
   visibility (meshchat stops seeing the node). 60 min is the fastest safe
   default.
+- **Every inbound message ends in a named outcome (2026-10-26).** `jhost/ledger.py`
+  appends `data/ledger.jsonl`: one `open` line written before any work on a
+  message, then terminal lines — `handed_off` (where the host's own responsibility
+  ends, with bytes in and out), then whatever the network did (`delivered`,
+  `propagated`, `failed`, `rejected`) or `dropped` / `abandoned` carrying a `why`.
+  This exists because "a player sent a turn and nothing came back" left no local
+  trace of any kind: LXMF invokes the delivery handler inside an `except` that logs
+  one line (`LXMessage.py:568-570` is the same shape), so an exception in the
+  handler was invisible; a reply could be abandoned after its turn had already been
+  applied; and a reply that never finished emitted nothing at all. An absence is
+  unreadable — a sequence with an `open` and no terminal line is not, which is also
+  the fingerprint of a crash mid-turn. Records are keyed `(boot, seq)` so a restart
+  can never close a dead run's open turn. Rotated by size with one generation kept,
+  because the record of what the server did must not become the disk fault it is
+  recording, and a ledger failure never fails a turn.
+- **A turn that cannot be answered is not played (2026-10-26).** Sender identity is
+  resolved *before* `handle_message`, not after it. Resolving it afterwards meant
+  the failing path fed the command, autosaved the slot and then discarded the reply:
+  the player's story advanced with nothing to show them and nothing recorded it.
+- **`delivered` is not "the player saw it" (2026-10-26).** The per-message delivery
+  callback is registered (`LXMessage.register_delivery_callback`, fired from
+  `__mark_delivered` / `__mark_propagated`) so a reply that finished and a reply
+  still pending are finally different events. But `DELIVERED` means the transfer
+  completed into the recipient's side, and `propagated` means a node is holding it
+  until the player collects; neither is evidence a human read anything. The only
+  such evidence is the player's next command, which is a fact about the player and
+  not something the host can certify.
+- **Propagated mail is collected, never waited for (2026-10-26).** A player
+  whose client cannot build a link to the host stores the turn at a propagation
+  node — that is what nodes are for. LXMF delivers stored mail only when the
+  *recipient* asks; the router job loop does outbound, link and store upkeep
+  and never pulls inbound (`LXMRouter.py` `jobs()`, 880-912). So the host asks,
+  once per game identity, on `--propagation-pull MIN` (minutes, default 5, 0
+  disables, needs `--propagation-node`). Without the poll those turns sit at the
+  node forever and disappear without a trace on either side — the client
+  believes it sent, the host never saw anything. A router mid-download is
+  skipped, because re-requesting resets `propagation_transfer_progress`.
+  One node only: mail stored elsewhere is still out of reach, and the complete
+  fix is this host running as a node itself (`enable_propagation`) so clients
+  have a node here to store to — disk and peering costs, an operator call.
 - **Runtime dependency:** `rns>=1.5,<1.6` (+ `lxmf>=1.1,<1.2`, which requires rns
   1.5.x). Declared in `pyproject.toml`. `zmach/` and its tests never import them.
 

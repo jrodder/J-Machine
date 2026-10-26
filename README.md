@@ -107,6 +107,37 @@ every turn (held while an in-game `save` image is pending, rewritten by the
 disappears for days reconnects to exactly where they left off.
 In-game `save`/`restore` verbs map to that slot with no prompt.
 
+### Propagation (operator)
+
+A player whose client cannot build a link to this host hands the turn to a
+propagation node instead — that is what nodes are for. LXMF then waits for the
+*recipient* to ask for it, and nothing in the router does that by itself, so the
+host asks: `--propagation-node <hash>` plus `--propagation-pull MIN` (default 5)
+queries that node once per game identity for anything it is holding. What comes
+back arrives through the same path as a direct send, so the turn plays
+identically. With no `--propagation-node` there is no poll, and a turn the
+player's client could not deliver directly is never seen here at all — the
+client thinks it sent, the host never saw it, nothing fails loudly anywhere.
+
+The poll collects only what *that* node holds. A client pointed at a different
+node is still out of reach; the full answer is running this host as a
+propagation node itself, so players' clients have a node here to store to
+(`enable_propagation`), which costs disk and peering and is not a default.
+
+### What the host records (operator)
+
+`data/ledger.jsonl` carries one line per state change of every inbound player
+message: an `open` line before any work, then `handed_off` with the byte counts,
+then what the network did — `delivered`, `propagated`, `failed`, `rejected` — or
+`dropped`/`abandoned` with a `why`. A message with an `open` and no terminal line
+is either a crash mid-turn or a reply still in flight, which is the only trace
+either one ever leaves. `delivered` means the transfer completed into the
+player's side, not that a person read it; their next command is the only proof of
+that. Rotated by size, so it cannot fill the disk it is recording.
+
+`data/host-destinations.json` remains the operator record of what addresses to
+tell people about.
+
 ### Guestbook (operator)
 
 One board for the whole server, linked from the top of the page

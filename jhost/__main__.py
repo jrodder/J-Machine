@@ -1,5 +1,6 @@
 """python3 -m jhost <games-dir> [--data-dir DIR] [--name NAME] [--seed N]
-[--port N] [--announce-interval MIN] [--propagation-node HASH]"""
+[--port N] [--announce-interval MIN] [--propagation-node HASH]
+[--propagation-pull MIN]"""
 import argparse
 
 from .host import Host
@@ -20,10 +21,15 @@ def main():
                     help="lxmf/delivery hash of a propagation node; a reply a "
                          "player's link cannot receive is handed to this node "
                          "for the player's router to hold (default: drop it)")
+    ap.add_argument("--propagation-pull", type=int, default=5, metavar="MIN",
+                    help="how often to ask --propagation-node for messages it "
+                         "is holding for each game (default 5; needs "
+                         "--propagation-node; 0 disables the poll)")
     a = ap.parse_args()
     host = Host(a.data_dir, a.games_dir, a.name, a.seed, a.port,
                 announce_interval=a.announce_interval * 60,
-                propagation_node=a.propagation_node)
+                propagation_node=a.propagation_node,
+                propagation_pull=a.propagation_pull * 60)
     host.start()
     host.run()
 

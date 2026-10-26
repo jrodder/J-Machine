@@ -15,6 +15,7 @@ import RNS
 from LXMF import LXMessage, LXMRouter
 
 from . import guestbook
+from .ledger import Ledger
 from .protocol import (DEST_JSON, FileSaveStore, handle_message,
                        player_stats, render_page, write_rns_config)
 
@@ -29,11 +30,26 @@ from .protocol import (DEST_JSON, FileSaveStore, handle_message,
 # retransmit window cover initial discovery.
 DEFAULT_ANNOUNCE_INTERVAL = 60 * 60
 
+# Propagation poll cadence default: 5 min. A player whose client cannot build
+# a link to this host hands the turn to a propagation node instead -- that is
+# what propagation nodes are for ("store and forward messages to users or
+# endpoints that are not directly reachable at the time of message emission",
+# LXMF doc). LXMF then waits for the RECIPIENT to ask: the router job loop
+# never pulls inbound mail (LXMRouter.py jobs(), 880-912 -- outbound, link and
+# store upkeep only), so a client app that never calls
+# request_messages_from_propagation_node leaves the turn at the node forever.
+# Without this poll those turns vanish with no trace on either side.
+DEFAULT_PROPAGATION_PULL = 5 * 60
+# The router's own pull state machine (LXMRouter PR_*); between these it is
+# mid-download and a second request would reset the transfer progress.
+PR_IN_FLIGHT = range(1, 7)   # PR_PATH_REQUESTED .. PR_RESPONSE_RECEIVED
+RUN_TICK = 15                # run() resolution, independent of both cadences
+
 
 class Host:
     def __init__(self, data_dir, games_dir, name="🕹️ J-Machine Games 🕹️",
                  seed=None, port=4242, announce_interval=None,
-                 propagation_node=None):
+                 propagation_node=None, propagation_pull=None):
         self.data_dir = Path(data_dir)
         self.games_dir = Path(games_dir)
         self.name = name
@@ -51,9 +67,13 @@ class Host:
         # player's own router holds it until their next inbox poll.
         self.propagation_node = (bytes.fromhex(propagation_node.replace(":", ""))
                                  if propagation_node else None)
+        self.propagation_pull = (propagation_pull
+                                 if propagation_pull is not None
+                                 else DEFAULT_PROPAGATION_PULL)
         self.sessions = {}            # {(game, sender): GameState}
         self.store = FileSaveStore(self.data_dir / "saves")
         self.routers = {}             # stem -> LXMRouter
+        self.identities = {}          # stem -> RNS.Identity (the mail's owner)
         self.destinations = {}        # stem -> delivery Destination
         self.stories = {}             # stem -> story Path
         self.manuals = {}             # stem -> games/<stem>.pdf Path
@@ -68,6 +88,8 @@ class Host:
                 stem, eq, shown = line.partition("=")
                 if eq and stem.strip() and not stem.lstrip().startswith("#"):
                     self.names[stem.strip()] = shown.strip()
+        # one durable outcome per inbound message (spec §3, jhost/ledger.py)
+        self.ledger = Ledger(self.data_dir / "ledger.jsonl")
         # guestbook log + operator denylist (spec §6): plain files under
         # data/, read per request, so pruning/moderating needs no restart
         self.gb_log = self.data_dir / "guestbook.jsonl"
@@ -112,10 +134,49 @@ class Host:
                   file=sys.stderr)
 
     def run(self):
-        """Block, re-announcing on self.announce_interval (spec §3)."""
+        """Block: re-announce on self.announce_interval (spec §3) and collect
+        each game's propagated mail on self.propagation_pull. start() already
+        announced, so both timers start from now."""
+        now = time.time()
+        next_announce = now + self.announce_interval
+        polling = bool(self.propagation_node and self.propagation_pull)
+        next_pull = now if polling else None
         while True:
-            time.sleep(self.announce_interval)
-            self._announce_all()
+            time.sleep(RUN_TICK)
+            now = time.time()
+            if now >= next_announce:
+                self._announce_all()
+                next_announce = now + self.announce_interval
+            if next_pull is not None and now >= next_pull:
+                self._pull_propagation()
+                next_pull = now + self.propagation_pull
+
+    def _pull_propagation(self):
+        """Ask the outbound propagation node for anything it is holding for
+        each game identity. Anything it has arrives through the same
+        register_delivery_callback path as a direct send, so _on_message needs
+        no second entry point.
+
+        One node, and only one: this collects what the node named by
+        --propagation-node holds. A client that stored its turn on a different
+        node is still out of reach -- the complete fix is for this host to run
+        as a propagation node itself (enable_propagation) so players' clients
+        have a node here to store to, which is an operator decision with disk
+        and peering costs, not a default."""
+        if self.propagation_node is None or not self.propagation_pull:
+            return
+        for stem in sorted(self.routers):
+            router = self.routers[stem]
+            if getattr(router, "propagation_transfer_state", 0) in PR_IN_FLIGHT:
+                continue        # mid-download: a second request resets it
+            try:
+                router.request_messages_from_propagation_node(
+                    self.identities[stem])
+            except Exception as e:
+                print(f"jhost: {stem}: propagation poll failed ({e})",
+                      file=sys.stderr)
+        print("jhost: polled propagation node for "
+              f"{len(self.routers)} game(s)", file=sys.stderr)
 
     # ------------------------------------------------ internals
     def _identity(self, stem):
@@ -146,6 +207,7 @@ class Host:
         router.register_delivery_callback(
             lambda msg: self._on_message(stem, msg))
         self.routers[stem] = router
+        self.identities[stem] = ident
         self.destinations[stem] = dl
         self.stories[stem] = story
         manual = self.games_dir / f"{stem}.pdf"
@@ -221,6 +283,31 @@ class Host:
         return f"{guestbook.NOTES[note]} #{sender[:guestbook.TAG]}"
 
     def _on_message(self, stem, msg):
+        """One inbound message, from arrival to recorded outcome.
+
+        The try/except is the point: LXMF calls this from its own delivery
+        path and wraps the handler call in an except that logs one line
+        (LXMessage.py:568-570 is the same shape), so an exception anywhere
+        below is how a player sends a turn and hears nothing at all. Nothing
+        here is allowed to escape unrecorded.
+        """
+        try:
+            sender = msg.source_hash.hex()
+        except Exception as e:
+            print(f"jhost: {stem}: inbound message with unusable source "
+                  f"({type(e).__name__}: {e}); ignored", file=sys.stderr)
+            return
+        short = sender[:guestbook.TAG]
+        seq = self.ledger.open(stem, short)
+        try:
+            self._serve(stem, sender, short, msg, seq)
+        except Exception as e:
+            self.ledger.close(seq, "abandoned",
+                              why=f"{type(e).__name__}: {e}")
+            print(f"jhost: {stem}/{short}: message failed before any reply "
+                  f"({type(e).__name__}: {e})", file=sys.stderr)
+
+    def _serve(self, stem, sender, short, msg, seq):
         if not msg.signature_validated and \
                 msg.unverified_reason == LXMessage.SOURCE_UNKNOWN:
             # source was unknown when LXMF parsed the message (fresh node,
@@ -234,13 +321,13 @@ class Host:
             except Exception as e:
                 print(f"jhost: {stem}: re-parse after path request failed "
                       f"({e})", file=sys.stderr)
-        sender = msg.source_hash.hex()
         text = msg.content_as_string()  # None if not valid UTF-8
-        with self.lock:
-            reply = handle_message(stem, sender, text,
-                                   msg.signature_validated, self.sessions,
-                                   self.store, str(self.stories[stem]),
-                                   self.seed, sign=self._sign)
+        n_in = len(text) if text else 0
+
+        # Identity BEFORE the game, not after it. Resolving it after
+        # handle_message meant the turn was fed, the slot autosaved, and only
+        # then the reply abandoned — the player's story advanced with nothing
+        # to show for it. A turn that cannot be answered is not played.
         src = RNS.Identity.recall(msg.source_hash)
         if src is None:
             # sender not in our known-destinations table yet (fresh node, or
@@ -249,10 +336,19 @@ class Host:
             # answered with the sender's announce, which lets us recall it.
             RNS.Transport.await_path(msg.source_hash, timeout=15)
             src = RNS.Identity.recall(msg.source_hash)
-            if src is None:
-                print(f"jhost: {stem}: cannot recall {sender[:8]} for reply "
-                      f"(path request failed)", file=sys.stderr)
-                return
+        if src is None:
+            self.ledger.close(seq, "abandoned", bytes_in=n_in,
+                              why="no_recalled_identity")
+            print(f"jhost: {stem}/{short}: cannot recall sender for reply "
+                  f"(path request failed); turn not played", file=sys.stderr)
+            return
+
+        with self.lock:
+            reply = handle_message(stem, sender, text,
+                                   msg.signature_validated, self.sessions,
+                                   self.store, str(self.stories[stem]),
+                                   self.seed, sign=self._sign)
+        payload = reply.encode()
         dest = RNS.Destination(src, RNS.Destination.OUT,
                                RNS.Destination.SINGLE, "lxmf", "delivery")
         # reply pattern verified spec §2; LXMessage requires an explicit
@@ -262,17 +358,48 @@ class Host:
         # whole reply in one readable message instead of parts that arrive
         # out of order.
         m = LXMessage(dest, self.destinations[stem],
-                      content=reply.encode(), title=stem)
-        m.failed_callback = lambda _m: self._reply_failed(stem, sender, dest,
-                                                          reply)
+                      content=payload, title=stem)
+        m.failed_callback = lambda _m: self._reply_failed(stem, short, dest,
+                                                          payload, seq, _m)
+        # the other half of the record: without this, a reply that never
+        # finishes and a reply that arrived are the same event (nothing), and
+        # "is the server working" has no answer. DELIVERED here means the
+        # transfer completed into the recipient's side, NOT that a human read
+        # it — the player's next command is the only receipt of that.
+        m.register_delivery_callback(
+            lambda _m: self._settled(stem, short, seq, _m))
         self.routers[stem].handle_outbound(m)
+        # our own boundary ends here; what the mesh does with it is a second,
+        # later line (§3: what can be certified and what cannot)
+        self.ledger.close(seq, "handed_off", bytes_in=n_in,
+                          bytes_out=len(payload))
 
-    def _reply_failed(self, stem, sender, dest, reply):
+    def _settled(self, stem, short, seq, m):
+        """LXMF's terminal signal for a reply. DELIVERED (state 0x08) is the
+        transfer completing; a PROPAGATED message arrives here as SENT with
+        method PROPAGATED, meaning a node is holding it until the player
+        collects. Neither is proof anyone saw it."""
+        if m.state == LXMessage.DELIVERED:
+            state = "delivered"
+        elif getattr(m, "method", None) == LXMessage.PROPAGATED:
+            state = "propagated"
+        elif m.state == LXMessage.REJECTED:
+            state = "rejected"
+        else:
+            state = f"concluded_{m.state}"
+        self.ledger.close(seq, state,
+                          attempts=getattr(m, "delivery_attempts", None))
+
+    def _reply_failed(self, stem, short, dest, payload, seq, m=None):
         """LXMF drops a reply once its direct attempts run out (only a debug
-        log line says so). Say it, and hand the text to the propagation
-        network if the operator named a node that can hold it for the player."""
-        print(f"jhost: {stem}: reply to {sender[:guestbook.TAG]} lost over link",
+        log line says so). Say it, record it, and hand the text to the
+        propagation network if the operator named a node that can hold it for
+        the player."""
+        print(f"jhost: {stem}: reply to {short} lost over link",
               file=sys.stderr)
+        self.ledger.close(seq, "failed", why="link_delivery_failed",
+                          bytes_out=len(payload),
+                          attempts=getattr(m, "delivery_attempts", None))
         # LXMF keeps reusing a link the peer abandoned ("Using available direct
         # link" + "Waiting for proof" for an hour, in the log), so every later
         # reply to that player queues behind a link that can never deliver.
@@ -285,19 +412,27 @@ class Host:
             except Exception:
                 pass
         if self.propagation_node is None:
+            self.ledger.close(seq, "dropped", why="no_propagation_node")
             print(f"jhost: {stem}: no --propagation-node set; reply dropped",
                   file=sys.stderr)
             return
-        m = LXMessage(dest, self.destinations[stem], content=reply.encode(),
+        m = LXMessage(dest, self.destinations[stem], content=payload,
                       title=stem, desired_method=LXMessage.PROPAGATED)
-        m.failed_callback = lambda _m: print(
-            f"jhost: {stem}: reply to {sender[:guestbook.TAG]} lost via "
-            f"propagation too", file=sys.stderr)
+        m.failed_callback = lambda _m: self._propagation_lost(stem, short, seq)
+        m.register_delivery_callback(
+            lambda _m: self._settled(stem, short, seq, _m))
         try:
             self.routers[stem].handle_outbound(m)
         except OSError as e:
+            self.ledger.close(seq, "dropped",
+                              why=f"propagation_handoff_{type(e).__name__}")
             print(f"jhost: {stem}: propagation handoff failed ({e})",
                   file=sys.stderr)
+
+    def _propagation_lost(self, stem, short, seq):
+        self.ledger.close(seq, "dropped", why="propagation_failed")
+        print(f"jhost: {stem}: reply to {short} lost via propagation too",
+              file=sys.stderr)
 
     def _announce_all(self):
         # the announce itself is silent at loglevel 6 — this line is the
