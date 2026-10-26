@@ -5,6 +5,7 @@ tests.network.smoke_host` (Task 2 smoke) or `python -m jhost` (Task 5
 network suite); clients = `python -m jclient`. Hash handoff via
 data/host-destinations.json (also the operator feature, spec §3).
 """
+import socket
 import subprocess
 import sys
 import time
@@ -45,6 +46,16 @@ def run_captured(argv, name, out_dir, timeout=180):
     log.close()
     text = out.decode(errors="replace")
     return p.returncode, text, text
+
+
+def free_port():
+    """A port nobody holds. The rig must not assume 4242 is free: that is the
+    production default, and on the production host the live service owns it,
+    which made the rig smoke test fail there (RNS: 'The interface "LAN TCP
+    Server" could not be created')."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def wait_file(path, timeout=120, interval=1.0):

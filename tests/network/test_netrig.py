@@ -39,9 +39,10 @@ class Smoke(unittest.TestCase):
             host_d, client_d = Path(d) / "host", Path(d) / "client"
             # minimal inline responder (smoke_host.py) — no jhost dependency;
             # proves the transport before the real host exists (Task 3)
+            port = netrig.free_port()
             h = netrig.spawn([sys.executable, "-u", "-m",
                               "tests.network.smoke_host",
-                              str(host_d), "4242", "Smoke"],
+                              str(host_d), str(port), "Smoke"],
                              "host", host_d)
             try:
                 self.assertTrue(
@@ -49,7 +50,7 @@ class Smoke(unittest.TestCase):
                     netrig.logs_tail(host_d))
                 rc, out, err = netrig.run_captured(
                     [sys.executable, "-u", "-m", "jclient", "smoke",
-                     "--data-dir", str(client_d),
+                     "--data-dir", str(client_d), "--port", str(port),
                      "--host-json", str(host_d / netrig.DEST_JSON)],
                     "client", client_d, timeout=180)
                 self.assertEqual(rc, 0,

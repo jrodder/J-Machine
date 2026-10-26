@@ -116,7 +116,8 @@ def cmd_fetch(a):
 
 
 def cmd_smoke(a):
-    c = Client(a.data_dir, Path(a.data_dir) / "identity", name="jclient")
+    c = Client(a.data_dir, Path(a.data_dir) / "identity", name="jclient",
+               port=a.port)
     dests = json.loads(Path(a.host_json).read_text())
     page_ident = c.recall(unpretty(dests["page"]), "page node")
     page_dest = RNS.Destination(page_ident, RNS.Destination.OUT,
@@ -167,6 +168,7 @@ if __name__ == "__main__":
     s = sub.add_parser("smoke")
     s.add_argument("--data-dir", required=True)
     s.add_argument("--host-json", required=True)
+    s.add_argument("--port", type=int, default=4242)
     a = ap.parse_args()
     sys.exit({"scan": cmd_scan, "browse": cmd_browse, "play": cmd_play,
               "fetch": cmd_fetch, "smoke": cmd_smoke}[a.cmd](a))
