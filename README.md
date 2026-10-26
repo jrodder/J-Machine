@@ -120,9 +120,18 @@ player's client could not deliver directly is never seen here at all — the
 client thinks it sent, the host never saw it, nothing fails loudly anywhere.
 
 The poll collects only what *that* node holds. A client pointed at a different
-node is still out of reach; the full answer is running this host as a
-propagation node itself, so players' clients have a node here to store to
-(`enable_propagation`), which costs disk and peering and is not a default.
+node is still out of reach — and no node ever pushes mail toward a recipient:
+`LXMRouter.jobs()` runs only store cleaning and peer distribution, so mail moves
+node-to-node by peering and reaches anyone only when that recipient's router
+asks. Neither flag is therefore a fix for availability, and neither is set here.
+Running this host as a propagation node (`enable_propagation`) helps exactly one
+thing — players who deliberately point their client at this host — and costs the
+opposite: every stored message is someone else's mail held on our disk, and per
+game router it is one more node announcing and peering. If that ever becomes a
+feature it needs one shared router for all 31 games rather than 31 nodes, plus a
+way to park our own replies locally, since naming *ourself* the outbound node
+means opening a link to ourself (`LXMRouter.py:2885-2894`), which RNS does not
+support.
 
 ### What the host records (operator)
 
@@ -144,6 +153,26 @@ startup, and the outcome counters, whose names are the ledger states.
 
 `data/host-destinations.json` remains the operator record of what addresses to
 tell people about.
+
+### What the journal shows (operator)
+
+Uplinks come and go — that is why there are several of them. RNS logs every
+socket close, reconnect attempt and reconnection, which over 30 days on the
+production host was roughly 73,000 of 138,629 journal lines: expected, correct,
+and enough to hide every other line in the file. So the host owns RNS's log line.
+`jhost/logs.py` registers itself as the RNS log destination
+(`RNS.Reticulum(configdir, logdest=...)`, accepted at `RNS/Reticulum.py:244`):
+the first occurrence of each churn message prints, repeats of the same message on
+the same interface are counted for 15 minutes instead of printed, and the count
+goes out with the next occurrence and into `data/health.json` as `log_suppressed`.
+A flapping uplink stays visible as a rate without occupying the journal.
+Replaying that same month through loglevel 5 plus the filter leaves **1,282 lines
+where there were 138,629**.
+
+Nothing else is suppressed: errors, story loads, link failures and tracebacks all
+pass through untouched. Keep `[logging] loglevel = 5` in the RNS config — the
+scaffold writes 5 for new hosts; 6 (DEBUG) is another 109,892 lines a month of
+RNS housekeeping, mostly known-destination cleaning.
 
 ### Guestbook (operator)
 

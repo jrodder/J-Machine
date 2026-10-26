@@ -18,6 +18,7 @@ from LXMF import LXMessage, LXMRouter
 
 from . import guestbook
 from .ledger import Ledger
+from .logs import LogFilter
 from .protocol import (DEST_JSON, FileSaveStore, handle_message,
                        player_stats, render_page, write_rns_config)
 
@@ -92,6 +93,7 @@ class Host:
                                  else DEFAULT_PROPAGATION_PULL)
         self.sessions = {}            # {(game, sender): GameState}
         self.store = FileSaveStore(self.data_dir / "saves")
+        self.logfilter = None         # set in start(); RNS log destination
         self.routers = {}             # stem -> LXMRouter
         self.identities = {}          # stem -> RNS.Identity (the mail's owner)
         self.destinations = {}        # stem -> delivery Destination
@@ -129,7 +131,10 @@ class Host:
             print(f"jhost: scaffolded RNS config at {cfg_dir / 'config'} "
                   f"(loopback only) — add your transports there and "
                   f"restart", file=sys.stderr)
-        RNS.Reticulum(str(cfg_dir))
+        # Own the RNS log line: hub churn is expected and voluminous, and at
+        # that volume the journal hides the failures that matter (spec §5).
+        self.logfilter = LogFilter()
+        RNS.Reticulum(str(cfg_dir), logdest=self.logfilter.emit)
 
         page_ident = self._identity("page")
         self.page_dest = RNS.Destination(page_ident, RNS.Destination.IN,
@@ -546,6 +551,8 @@ class Host:
             "enable_transport": self._config_flag("enable_transport"),
             "saves_writable": self._saves_writable(),
             "disk_free_bytes": free,
+            "log_suppressed": (self.logfilter.stats()
+                               if self.logfilter else {}),
             "games": len(self.stories),
             "games_missing_story": sorted(s for s in self.stories
                                           if not self.stories[s].exists()),

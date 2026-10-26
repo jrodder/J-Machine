@@ -18,9 +18,13 @@ def main():
                     help="re-announce cadence in minutes (default 60; "
                          "RNS rate-limits announces to ~1/hour)")
     ap.add_argument("--propagation-node", default=None, metavar="HASH",
-                    help="lxmf/delivery hash of a propagation node; a reply a "
-                         "player's link cannot receive is handed to this node "
-                         "for the player's router to hold (default: drop it)")
+                    help="lxmf/propagation hash of a propagation node (not its "
+                         "delivery hash: LXMF recalls the identity from this "
+                         "hash and rebuilds an lxmf/propagation destination, "
+                         "LXMRouter.py:527). A reply a player's link cannot "
+                         "receive is handed to this node for the player's "
+                         "router to fetch, so it only arrives if they poll this "
+                         "same node (default: drop it, recorded in the ledger)")
     ap.add_argument("--propagation-pull", type=int, default=5, metavar="MIN",
                     help="how often to ask --propagation-node for messages it "
                          "is holding for each game (default 5; needs "
