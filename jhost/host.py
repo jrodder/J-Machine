@@ -20,6 +20,8 @@ from . import guestbook
 from . import window
 from .ledger import Ledger
 from .logs import LogFilter
+from .rollup import (DAYS_FILE, merge as merge_days, newest as newest_day,
+                     read_days, write_days)
 from .probe import read_probe
 from .protocol import (DEST_JSON, PING, PING_ACK, FileSaveStore,
                        handle_message, ping_reply, player_stats, render_page,
@@ -51,6 +53,8 @@ DEFAULT_PROPAGATION_PULL = 5 * 60
 PR_IN_FLIGHT = range(1, 7)   # PR_PATH_REQUESTED .. PR_RESPONSE_RECEIVED
 RUN_TICK = 15                # run() resolution, independent of both cadences
 HEALTH_INTERVAL = 60         # data/health.json rewrite cadence
+ROLLUP_INTERVAL = 900        # day log fold: cheap, and keeps today at most
+                             # 15 min behind the ledger
 
 # The outcome names are the ledger states verbatim, so a counter and a ledger
 # line can never disagree about what happened to a message.
@@ -119,6 +123,9 @@ class Host:
                     self.names[stem.strip()] = shown.strip()
         # one durable outcome per inbound message (spec §3, jhost/ledger.py)
         self.ledger = Ledger(self.data_dir / "ledger.jsonl")
+        # the permanent day log, folded forward from the ledger on a timer
+        self.days = read_days(self.data_dir / DAYS_FILE)
+        self.rollup_error = None
         # current-state counters for data/health.json; the per-message detail
         # is the ledger, this is the snapshot a check reads without parsing it
         self.started = None
@@ -184,12 +191,16 @@ class Host:
         polling = bool(self.propagation_node and self.propagation_pull)
         next_pull = now if polling else None
         next_health = now
+        next_rollup = now
         while True:
             time.sleep(RUN_TICK)
             now = time.time()
             if now >= next_health:
                 self.write_health()
                 next_health = now + HEALTH_INTERVAL
+            if now >= next_rollup:
+                self._advance_rollup()
+                next_rollup = now + ROLLUP_INTERVAL
             if now >= next_announce:
                 self._announce_all()
                 next_announce = now + self.announce_interval
@@ -341,7 +352,8 @@ class Host:
                 activity=window.activity([ledger.with_name(ledger.name + ".1"),
                                           ledger]),
                 back=f"{page_hex}:/page/index.mu",
-                names=self.names, service=self._service()).encode()
+                names=self.names, service=self._service(),
+                days=self.days).encode()
         except Exception as e:
             # same reason _page_handler counts: RNS swallows a handler that
             # raises, so a broken stats page would look like nobody reading it
@@ -502,6 +514,15 @@ class Host:
         evidence = [t for t in (h.get("probe_t")
                                 if h.get("probe_ok") else None,
                                 h.get("last_roundtrip_ok")) if t]
+        # the day log advancing is a condition, not a rate: today has begun, so
+        # today should be in the file. If it is not, the recorder is broken and
+        # history is being lost right now — worth a red button even though every
+        # player-facing number still looks fine.
+        if h.get("rollup_error"):
+            faults.append("day log not updating: " + h["rollup_error"])
+        elif h.get("rollup_days") and newest_day(self.days) != time.strftime(
+                "%Y-%m-%d", time.localtime()):
+            faults.append("day log has not recorded today")
         return {"faults": faults, "verified_at": max(evidence) if evidence else None}
 
     def _serve(self, stem, sender, short, msg, seq):
@@ -631,6 +652,35 @@ class Host:
         print(f"jhost: {stem}: reply to {short} lost via propagation too",
               file=sys.stderr)
 
+    def _advance_rollup(self):
+        """Fold what the ledger currently remembers into the permanent day log.
+
+        Bookkeeping about the host's own files, not a judgement about whether the
+        host is working — that is the probe's job, and it stays outside this
+        process where a lie is impossible. It reads the same bounded tail the
+        stats page reads and only ever raises counts, so running it twice is the
+        same as running it once and running it often costs one small file write.
+
+        It starts on boot for a specific reason: the ledger rotates, so a host
+        that restarts inside a quiet stretch could otherwise lose the day it was
+        in the middle of.
+        """
+        try:
+            ledger = self.ledger.path
+            act = window.activity([ledger.with_name(ledger.name + ".1"),
+                                   ledger])
+            before = repr(self.days)
+            merge_days(self.days, act)
+            if repr(self.days) != before:
+                write_days(self.data_dir / DAYS_FILE, self.days)
+            self.rollup_error = None
+        except Exception as e:
+            # never let bookkeeping break serving; say so loudly and keep going,
+            # and let readiness() turn it into a visible fault
+            self.rollup_error = f"{type(e).__name__}: {e}"
+            print(f"jhost: day log not updated ({self.rollup_error})",
+                  file=sys.stderr)
+
     def _announce_all(self):
         # the announce itself is silent at loglevel 6 — this line is the
         # operator's proof the re-announce cycle (and the startup announce)
@@ -685,6 +735,12 @@ class Host:
                                           if not self.stories[s].exists()),
             "sessions": len(self.sessions),
             "ledger_unresolved": len(self.ledger.unresolved()),
+            # the day log's own state: if it stopped advancing, the history the
+            # page promises is quietly being lost, which is exactly the kind of
+            # slow silent failure this file exists to catch
+            "rollup_days": len(self.days),
+            "rollup_newest": newest_day(self.days),
+            "rollup_error": self.rollup_error,
         }
         # The last external check, if anyone has run one. Read here rather than
         # at render time so the page and health.json answer from one snapshot.

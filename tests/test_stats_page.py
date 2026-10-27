@@ -3,6 +3,7 @@ rules are pinned here because both are easy to break by accident — a section
 with nothing to say is omitted rather than shown as a zero, and no identity
 appears anywhere on a public page."""
 import re
+import time
 import unittest
 
 from jhost import protocol as P
@@ -11,6 +12,12 @@ from jhost.protocol import GameStats, PlayerStats, render_stats
 from jhost.window import Activity
 
 HASH_32 = re.compile(r"\b[0-9a-f]{32}\b")
+
+
+def bucket(turns=0, players=0, delivered=0, failed=0):
+    """One game's counts for one day, in the shape window.activity produces."""
+    return {"turns": turns, "players": players,
+            "delivered": delivered, "failed": failed}
 
 
 def stats(**games):
@@ -55,8 +62,36 @@ class ActivityPage(unittest.TestCase):
         self.assertNotIn("quiet", out)
         self.assertNotIn("0 moves", out)
 
+    def test_the_day_log_shows_quiet_days_as_quiet(self):
+        # The point of the durable log over the ledger window: an empty day is a
+        # fact that gets printed, not a gap the reader has to interpret.
+        now = 1793036879.0
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        yest = time.strftime("%Y-%m-%d", time.localtime(now - 86400))
+        out = P._plain(render_stats("J", stats(), now=now, days={
+            yest: {"h2g2": bucket(turns=6, players=2, delivered=6)},
+            today: {},
+        }))
+        self.assertIn("6 moves", out)
+        self.assertIn("2 players", out)
+        self.assertIn("0 moves", out)
+
+    def test_the_day_log_is_preferred_over_the_ledger_window(self):
+        # Both describe recent days; the durable one is the truth about them, and
+        # it never shrinks when the ledger rotates.
+        now = 1793036879.0
+        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        out = P._plain(render_stats(
+            "J", stats(), now=now,
+            days={day: {"h2g2": bucket(turns=41, players=3)}},
+            activity=Activity(per_day={day: {"h2g2": bucket(turns=2)}},
+                              outcomes={"delivered": 2}, since=now,
+                              until=now)))
+        self.assertIn("41 moves", out)
+        self.assertNotIn("2 moves", out)
+
     def test_reply_counts_carry_their_window(self):
-        act = Activity(per_day={"2026-10-26": {"h2g2": 2}},
+        act = Activity(per_day={"2026-10-26": {"h2g2": bucket(2, 1, 2, 1)}},
                        outcomes={"handed_off": 2, "delivered": 2, "failed": 1},
                        in_flight=1, since=1793036879.0,
                        until=1793041392.0)
@@ -67,7 +102,7 @@ class ActivityPage(unittest.TestCase):
         self.assertIn("since", out)
 
     def test_a_rotated_ledger_says_its_window_is_partial(self):
-        act = Activity(per_day={"2026-10-26": {"h2g2": 1}},
+        act = Activity(per_day={"2026-10-26": {"h2g2": bucket(1)}},
                        outcomes={"delivered": 1}, since=1.0, until=2.0,
                        truncated=True)
         self.assertIn("most recent turns only",
@@ -82,7 +117,7 @@ class ActivityPage(unittest.TestCase):
         # the save tree could attribute every number here to a destination
         # hash; a hash is a persistent handle on a person, so the page must not
         # carry one even if a future caller passes something through
-        act = Activity(per_day={"2026-10-26": {"h2g2": 2}},
+        act = Activity(per_day={"2026-10-26": {"h2g2": bucket(2, 1)}},
                        outcomes={"delivered": 2}, since=1.0, until=2.0)
         out = render_stats("J", stats(
             h2g2=GameStats(explorers=2, turns=9, last_move=1.0,

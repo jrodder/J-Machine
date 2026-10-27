@@ -25,6 +25,7 @@ from pathlib import Path
 from zmach.events import (EndOfGame, Error, SaveFileError, StoryFileError,
                           Text)
 from zmach.session import Session
+from .rollup import recent as recent_days
 
 INPUT_CAP = 200  # trust boundary: player lines are short (spec §4)
 
@@ -648,6 +649,17 @@ def _plain(text):
     return MICRON_TAG.sub("", text)
 
 
+DAY_ROWS = 7              # rows in the Recent days section, quiet days included
+
+
+def _stamp_label(since, truncated=False):
+    """How far back a ledger read actually reaches, said plainly. The day log has
+    a `since <date>` of its own; this is the fallback's, and it has to admit when
+    it stopped short."""
+    text = "since " + time.strftime("%d %b %H:%M", time.localtime(since))
+    return text + (" (most recent turns only)" if truncated else "")
+
+
 def _day_label(day):
     """'2026-10-26' -> '26 Oct'. Micron has no date formatting (see ago())."""
     try:
@@ -656,8 +668,8 @@ def _day_label(day):
         return day
 
 
-def render_stats(name, stats, activity=None, back=None, names=None,
-               now=None, service=None):
+def render_stats(name, stats, activity=None, back=None, names=None, now=None,
+               service=None, days=None):
     """The activity page (spec §6): the per-game and per-day breakdown that is
     too long for the main page, one link away. Pure, rendered per request like
     the page and the board, so there is nothing to invalidate.
@@ -728,22 +740,56 @@ def render_stats(name, stats, activity=None, back=None, names=None,
                 keep = keep[:-1]
             lines.append(row)
 
-    if activity is not None and activity.since:
-        days = sorted(activity.per_day, reverse=True)[:7]
-        if days:
-            lines.append(DIV)
-            lines.append(BAR_SECTION + "Recent days" + CLOSE_BAR)
-            for d in days:
-                per_game = activity.per_day[d]
-                n = sum(per_game.values())
-                detail = ", ".join(f"{g} {c}" for g, c in sorted(
-                    per_game.items(), key=lambda kv: (-kv[1], kv[0]))[:4])
-                row = ("  " + AMBER + _day_label(d) + RESET + "  "
-                       + GOLD + f"{n} " + plural(n, "move", "moves") + RESET)
-                if detail:
-                    row += GREY + "  " + detail + RESET
-                lines.append(row)
+    # Two sources for the same section, and the durable one wins. `days` is the
+    # permanent day log (jhost/rollup.py): every day since it started, including
+    # the empty ones, which is what lets the page say "yesterday: nothing"
+    # instead of falling silent. The activity window is the fallback for a host
+    # whose day log has not been written yet, and it is labelled as the window it
+    # is, because showing a few hours under a week's heading is a lie of the same
+    # family as an unlabelled rotated count.
+    day_rows, label = [], None
+    if days:
+        day_rows = recent_days(days, DAY_ROWS, now)
+        label = "since " + _day_label(min(days)) if days else None
+    elif activity is not None and activity.since:
+        day_rows = []
+        for d in sorted(activity.per_day, reverse=True)[:DAY_ROWS]:
+            counts = activity.per_day[d]
+            day_rows.append({
+                "day": d,
+                "turns": sum(c["turns"] for c in counts.values()),
+                "players": sum(c["players"] for c in counts.values()),
+                "failed": sum(c["failed"] for c in counts.values()),
+                "games": {g: c["turns"] for g, c in counts.items()},
+            })
+        label = _stamp_label(activity.since, activity.truncated)
+    if day_rows:
+        lines.append(DIV)
+        lines.append(BAR_SECTION + "Recent days" + CLOSE_BAR)
+        if label:
+            lines.append("  " + GREY + label + RESET)
+        for d in day_rows:
+            n = d["turns"]
+            row = ("  " + AMBER + _day_label(d["day"]) + RESET + "  "
+                   + GOLD + f"{n} " + plural(n, "move", "moves") + RESET)
+            parts = []
+            if d.get("players"):
+                parts.append(TEAL + f"{d['players']} "
+                             + plural(d["players"], "player", "players")
+                             + RESET)
+            detail = ", ".join(f"{g} {c}" for g, c in sorted(
+                (d.get("games") or {}).items(), key=lambda kv: (-kv[1], kv[0]))[:3])
+            if detail:
+                parts.append(GREY + detail + RESET)
+            if d.get("failed"):
+                parts.append(CLAY + f"{d['failed']} "
+                             + plural(d["failed"], "unanswered", "unanswered")
+                             + RESET)
+            if parts:
+                row += "  " + " · ".join(parts)
+            lines.append(row)
 
+    if activity is not None and activity.since:
         # Replies carry their own window, because the ledger is size-rotated:
         # an unlabelled count would read as all-time and quietly shrink.
         o = activity.outcomes

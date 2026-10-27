@@ -29,6 +29,12 @@ def line(seq, boot, state, t=None, game=None, player=None, **fields):
     return json.dumps(rec)
 
 
+def row(turns=0, players=0, delivered=0, failed=0):
+    """One game's counts for one day — the shape per_day holds."""
+    return {"turns": turns, "players": players,
+            "delivered": delivered, "failed": failed}
+
+
 class LedgerWindow(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.TemporaryDirectory()
@@ -47,7 +53,7 @@ class LedgerWindow(unittest.TestCase):
         self.write([line(1, "b1", "open", game="h2g2", player="aaaa11"),
                     line(2, "b1", "open", game="h2g2", player="aaaa11")])
         self.assertEqual(self.read().per_day,
-                         {"2026-10-26": {"h2g2": 2}})
+                         {"2026-10-26": {"h2g2": row(turns=2, players=1)}})
 
     def test_handed_off_then_delivered_reads_as_delivered(self):
         self.write([line(1, "b1", "open", game="zork1", player="aaaa11"),
@@ -78,7 +84,8 @@ class LedgerWindow(unittest.TestCase):
         self.write([line(1, "b1", "open", t=stamp("2026-10-24"), game="h2g2"),
                     line(2, "b1", "open", t=stamp("2026-10-25"), game="h2g2"),
                     line(3, "b1", "open", t=stamp("2026-10-25"), game="sherlock")])
-        self.assertEqual(self.read().per_day,
+        self.assertEqual({d: {g: c["turns"] for g, c in games.items()}
+                          for d, games in self.read().per_day.items()},
                          {"2026-10-24": {"h2g2": 1},
                           "2026-10-25": {"h2g2": 1, "sherlock": 1}})
 
@@ -101,8 +108,8 @@ class LedgerWindow(unittest.TestCase):
         # What the cap promises is not "only today" but: the newest record is
         # there, the older ones are not all there, and the partial line the
         # seek landed inside became no record at all.
-        self.assertEqual(a.per_day["2026-10-26"], {"zork1": 1})
-        counted = sum(sum(g.values()) for g in a.per_day.values())
+        self.assertEqual(a.per_day["2026-10-26"]["zork1"]["turns"], 1)
+        counted = sum(c["turns"] for g in a.per_day.values() for c in g.values())
         self.assertLess(counted, 200)
         self.assertEqual(a.until, stamp("2026-10-26"),
                        "the newest record must be inside the window")
@@ -112,7 +119,7 @@ class LedgerWindow(unittest.TestCase):
                    path=str(self.path) + ".1")
         self.write([line(1, "b1", "open", t=stamp("2026-10-26"), game="h2g2")])
         a = self.read(paths=[str(self.path) + ".1", str(self.path)])
-        self.assertEqual(a.per_day["2026-10-25"]["h2g2"], 1)
+        self.assertEqual(a.per_day["2026-10-25"]["h2g2"]["turns"], 1)
         self.assertFalse(a.truncated)
         self.assertEqual(a.since, stamp("2026-10-25"))
         self.assertEqual(a.until, stamp("2026-10-26"))
@@ -122,7 +129,40 @@ class LedgerWindow(unittest.TestCase):
                              + line(1, "b1", "open", game="h2g2") + "\n"
                              + "{broken\n")
         a = self.read(paths=[Path(self.d.name) / "absent.jsonl", self.path])
-        self.assertEqual(a.per_day, {"2026-10-26": {"h2g2": 1}})
+        self.assertEqual(a.per_day, {"2026-10-26": {"h2g2": row(turns=1)}})
+
+    def test_one_player_across_three_games_counts_once_per_game(self):
+        # per_day players are per game, which is the question the day log answers
+        # ("who touched this game today"); the all-time one-person-one-player
+        # count stays the save tree's job.
+        self.write([line(1, "b1", "open", game="h2g2", player="aaaa11"),
+                    line(2, "b1", "open", game="zork1", player="aaaa11"),
+                    line(3, "b1", "open", game="h2g2", player="bbbb22")])
+        per_day = self.read().per_day["2026-10-26"]
+        self.assertEqual(per_day["h2g2"], row(turns=2, players=2))
+        self.assertEqual(per_day["zork1"], row(turns=1, players=1))
+
+    def test_an_outcome_is_attributed_to_the_game_it_opened_on(self):
+        # outcome lines carry only (boot, seq), so the game has to come from the
+        # open record; a turn opened before the window is left unattributed
+        # rather than counted against whatever game happens to be nearby.
+        self.write([line(1, "b1", "open", game="h2g2", player="aaaa11"),
+                    line(1, "b1", "handed_off"),
+                    line(1, "b1", "delivered"),
+                    line(2, "b1", "open", game="zork1", player="bbbb22"),
+                    line(2, "b1", "failed"),
+                    line(3, "b1", "delivered")])
+        per_day = self.read().per_day["2026-10-26"]
+        self.assertEqual(per_day["h2g2"], row(turns=1, players=1, delivered=1))
+        self.assertEqual(per_day["zork1"], row(turns=1, players=1, failed=1))
+
+    def test_a_turn_still_in_flight_counts_as_neither(self):
+        self.write([line(1, "b1", "open", game="h2g2", player="aaaa11"),
+                    line(1, "b1", "handed_off")])
+        a = self.read()
+        self.assertEqual(a.per_day["2026-10-26"]["h2g2"],
+                         row(turns=1, players=1))
+        self.assertEqual(a.in_flight, 1)
 
     def test_a_fresh_host_reads_as_nothing_rather_than_failing(self):
         a = self.read(paths=[])

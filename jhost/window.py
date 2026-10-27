@@ -29,6 +29,10 @@ OPEN = "open"
 # Not an outcome: the reply is on its way. A turn whose newest record is
 # handed_off has no answer yet, so it is in flight, not delivered.
 INTERMEDIATE = ("handed_off",)
+# Outcomes that mean the player got an answer. propagated is included because
+# the turn was handed to a node that will carry it, which is the same promise
+# from the player's side; it is split out in the Replies section.
+DELIVERED = ("delivered", "propagated")
 
 
 class Activity:
@@ -50,8 +54,8 @@ class Activity:
         now = time.time() if now is None else now
         cutoff = time.strftime(
             "%Y-%m-%d", time.localtime(now - 86400 * max(days - 1, 0)))
-        return sum(sum(games.values())
-                   for day, games in self.per_day.items() if day >= cutoff)
+        return sum(g["turns"] for day, games in self.per_day.items()
+                   if day >= cutoff for g in games.values())
 
     def __bool__(self):
         return self.since is not None
@@ -76,6 +80,12 @@ def activity(paths, now=None, max_bytes=DEFAULT_MAX_BYTES):
     """Roll up `paths` (ledger files, oldest first) into an Activity. Missing
     files are the fresh-host state; unreadable lines are skipped."""
     per_day, outcomes, turn_keys, last_state = {}, {}, set(), {}
+    # a turn's game is only known from its open record, and outcomes arrive as a
+    # later line with just (boot, seq) — so the game is remembered here and the
+    # outcome is attributed back to it at the end. A turn that opened before the
+    # window is not attributed to a game, and is not silently counted somewhere
+    # else instead.
+    turn_of, players = {}, {}
     since = until = None
     truncated = False
     chunks, used = [], 0
@@ -108,10 +118,18 @@ def activity(paths, now=None, max_bytes=DEFAULT_MAX_BYTES):
         key = (rec.get("b"), rec.get("s"))
         if state == OPEN:
             day = time.strftime("%Y-%m-%d", time.localtime(stamp))
-            per_day.setdefault(day, {})
             game = rec.get("game") or "?"
-            per_day[day][game] = per_day[day].get(game, 0) + 1
+            row = per_day.setdefault(day, {}).setdefault(
+                game, {"turns": 0, "players": 0, "delivered": 0, "failed": 0})
+            row["turns"] += 1
             turn_keys.add(key)
+            turn_of[key] = (day, game)
+            who = rec.get("player")
+            if who:
+                seen = players.setdefault((day, game), set())
+                if who not in seen:
+                    seen.add(who)
+                    row["players"] += 1
         else:
             outcomes[state] = outcomes.get(state, 0) + 1
             prev = last_state.get(key)
@@ -119,6 +137,14 @@ def activity(paths, now=None, max_bytes=DEFAULT_MAX_BYTES):
             # as delivered, which is the network's answer arriving after ours
             if prev is None or stamp >= prev[0]:
                 last_state[key] = (stamp, state)
+    for key, (_stamp, state) in last_state.items():
+        if state in INTERMEDIATE or key not in turn_of:
+            continue
+        day, game = turn_of[key]
+        row = per_day[day][game]
+        # the same split the Replies section uses: handed_off is still in
+        # flight, delivered/propagated landed, anything else did not
+        row["delivered" if state in DELIVERED else "failed"] += 1
     in_flight = sum(1 for key in turn_keys
                     if key not in last_state
                     or last_state[key][1] in INTERMEDIATE)

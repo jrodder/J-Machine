@@ -151,6 +151,21 @@ is invisible to everyone, which looks healthy from every other angle), whether
 the save store is writable, free disk, story files that disappeared after
 startup, and the outcome counters, whose names are the ledger states.
 
+`data/days.jsonl` is the permanent day log — one line per calendar day, each day a
+map of game to turns, players, delivered and unanswered. The ledger above is where
+these numbers come from, but the ledger is size-rotated and forgets after a few
+thousand turns, so without this file the answer to "was last Tuesday busy" stops
+existing. It is written by folding the ledger window into what is already there,
+and the fold only ever raises a number: a page read sees a window, not the whole
+ledger, and a quiet afternoon must not be allowed to rewrite history. Empty days get
+a row too, because "nobody played" and "we stopped recording" must not look alike.
+A year of it is a few dozen kilobytes.
+
+The forever numbers are not in this file and never were: players, moves and finishes
+come from the autosave slot tree, where a slot is written every turn and never
+deleted, plus a floor file that can only increase so a corrupt read cannot walk the
+odometer backwards.
+
 `data/host-destinations.json` remains the operator record of what addresses to
 tell people about.
 
@@ -184,7 +199,12 @@ the whole file).
 
 Sections: server totals, per game (played games only, most recent first, with
 the newest player's own move count — a game's total hides a long solo run),
-recent days, and replies. Two rules hold it honest. A section with nothing to say
+recent days, and replies. Recent days reads the permanent day log when there is
+one, so it shows seven days including the quiet ones and says how far back the log
+goes; only on a host that has not written one yet does it fall back to the ledger
+window, where it labels itself as the window it is. A day log that has stopped
+recording today is a fault, and turns the status button red — every player-facing
+number looks normal while that is happening, which is why it is checked. Two rules hold it honest. A section with nothing to say
 is omitted rather than rendered as a zero, because a number that appears, vanishes
 and reappears lower reads as a fault. And the reply counts carry their own window
 label (`since 26 Oct 13:55`) because the ledger is size-rotated — an unlabelled
