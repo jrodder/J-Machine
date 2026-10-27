@@ -20,9 +20,9 @@ from . import guestbook
 from . import window
 from .ledger import Ledger
 from .logs import LogFilter
-from .protocol import (DEST_JSON, FileSaveStore, handle_message,
-                       player_stats, render_page, render_stats,
-                       write_rns_config)
+from .protocol import (DEST_JSON, PING, PING_ACK, FileSaveStore,
+                       handle_message, ping_reply, player_stats, render_page,
+                       render_stats, write_rns_config)
 
 
 # Re-announce cadence default: 60 min (spec §3). RNS rate-limits announce
@@ -62,6 +62,8 @@ def fresh_stats():
     one assembled without __init__ can never disagree about the keys."""
     stats = {"inbound": 0, "page_requests": 0, "page_errors": 0,
              "stats_requests": 0, "stats_errors": 0,
+             "pings": 0, "acks": 0, "ping_unanswered": 0,
+             "last_ping": None, "last_roundtrip_ok": None,
              "guest_requests": 0, "guest_posts": 0, "file_requests": 0,
              "announce_cycles": 0, "poll_cycles": 0, "last_inbound": None,
              "last_page": None, "last_stats": None,
@@ -338,7 +340,7 @@ class Host:
                 activity=window.activity([ledger.with_name(ledger.name + ".1"),
                                           ledger]),
                 back=f"{page_hex}:/page/index.mu",
-                names=self.names).encode()
+                names=self.names, service=self._service()).encode()
         except Exception as e:
             # same reason _page_handler counts: RNS swallows a handler that
             # raises, so a broken stats page would look like nobody reading it
@@ -405,6 +407,28 @@ class Host:
                   f"({type(e).__name__}: {e}); ignored", file=sys.stderr)
             return
         short = sender[:guestbook.TAG]
+        # A ping is answered before a record is opened, and opens none: no
+        # ledger line, no session, no slot, no move counted. That is the design,
+        # not an optimisation. An instrument that increments the numbers it
+        # exists to check would be the third thing on the activity page lying
+        # about players (the others being an unlabelled rotated window and a
+        # self-reported health dot). The verb is matched exactly, never as a
+        # prefix, so a player typing "ping the wizard" plays normally.
+        try:
+            verb = (msg.content_as_string() or "").strip().lower()
+        except Exception:
+            verb = ""
+        if verb == PING:
+            self._answer_ping(stem, msg)
+            return
+        if verb == PING_ACK or verb.startswith(PING_ACK + " "):
+            # The only attestation of the outbound leg anywhere: the host cannot
+            # see a player's client collect a reply, so an outside checker that
+            # says "it arrived" is the evidence, and it is inbound traffic, so
+            # it cannot be faked from this side.
+            self.stats["acks"] += 1
+            self.stats["last_roundtrip_ok"] = time.time()
+            return
         seq = self.ledger.open(stem, short)
         self.stats["inbound"] += 1
         self.stats["last_inbound"] = time.time()
@@ -414,6 +438,50 @@ class Host:
             self._record(seq, "abandoned", why=f"{type(e).__name__}: {e}")
             print(f"jhost: {stem}/{short}: message failed before any reply "
                   f"({type(e).__name__}: {e})", file=sys.stderr)
+
+    def _answer_ping(self, stem, msg):
+        """Reply to an external check without touching a player's data.
+
+        The reply needs what a turn needs: a recalled identity to address. An
+        un-recallable source is counted and said out loud, because "nobody could
+        reach them" and "nobody checked" must not become the same observation."""
+        self.stats["pings"] += 1
+        self.stats["last_ping"] = time.time()
+        src = RNS.Identity.recall(msg.source_hash)
+        if src is None:
+            RNS.Transport.await_path(msg.source_hash, timeout=15)
+            src = RNS.Identity.recall(msg.source_hash)
+        if src is None:
+            self.stats["ping_unanswered"] += 1
+            print("jhost: ping could not be answered (sender identity "
+                  "unknown); round trip not possible", file=sys.stderr)
+            return
+        payload = ping_reply(self.ledger.boot, len(self.stories)).encode()
+        dest = RNS.Destination(src, RNS.Destination.OUT,
+                               RNS.Destination.SINGLE, "lxmf", "delivery")
+        m = LXMessage(dest, self.destinations[stem], content=payload,
+                      title=stem)
+        self.routers[stem].handle_outbound(m)
+
+    def _service(self):
+        """The facts behind the status pill, read from the same readiness
+        snapshot health.json carries, so the page and the file never hold two
+        opinions about what is wrong."""
+        h = self.readiness()
+        faults = []
+        if h["games_missing_story"]:
+            faults.append("story file missing: "
+                          + ", ".join(h["games_missing_story"][:3]))
+        if not h["saves_writable"]:
+            faults.append("save store is not writable")
+        if h["ledger_unresolved"]:
+            faults.append(f"{h['ledger_unresolved']} turns with no outcome")
+        if h["interfaces_total"] and not h["interfaces_online"]:
+            faults.append("no interface online")
+        errs = h["page_errors"] + h["stats_errors"]
+        if errs:
+            faults.append(f"{errs} page render failure{'s' if errs > 1 else ''}")
+        return {"faults": faults, "verified_at": h.get("last_roundtrip_ok")}
 
     def _serve(self, stem, sender, short, msg, seq):
         if not msg.signature_validated and \

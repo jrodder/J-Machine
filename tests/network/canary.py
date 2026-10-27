@@ -43,6 +43,7 @@ TURNS = ["look", "open mailbox", "take leaflet", "north", "south"]
 # hitting one means something is actually broken, not merely slow.
 HOST_TIMEOUT = 120      # host up + host-destinations.json written
 PAGE_TIMEOUT = 180      # page fetch: link handshake + response
+PING_TIMEOUT = 240        # ping: LXMF in, answer out, ack back
 TURN_TIMEOUT = 120      # one game line -> its reply
 EXIT_TIMEOUT = 60       # client exit after stdin close
 KILL_TIMEOUT = 10       # teardown escalation TERM -> KILL
@@ -211,6 +212,22 @@ def check_stats(stats_text, page_addr):
                            f"{leaked.group(0)}")
 
 
+def ping_roundtrip(game_addr, work, port):
+    """`jclient ping` against the live rig host: a real LXMF turn-shaped round
+    trip from a separate process, plus the ack that tells the host the answer
+    arrived. Returns the command's own summary line."""
+    rc, out, _ = netrig.run_captured(
+        [sys.executable, "-u", "-m", "jclient", "ping", game_addr,
+         "--wait", "120", "--data-dir", str(work),
+         "--identity", str(work / "identity"), "--port", str(port)],
+        "ping", work, timeout=PING_TIMEOUT)
+    if rc != 0:
+        raise RuntimeError(f"ping exit {rc}: {out.strip()[-300:]}")
+    if "ping OK" not in out:
+        raise RuntimeError(f"ping did not report success: {out.strip()[-200:]}")
+    return out.strip().splitlines()[-1]
+
+
 def fetch_default_out(page_addr, work, port, path):
     """`jclient fetch` with no --out, run with `work` as the working directory.
 
@@ -370,16 +387,29 @@ def probe(work, done):
             check_ledger(data_dir, len(times))
         # after the turns, because the page reports activity: fetched before
         # anyone played it would pass on an empty page
+        with stage("stats", done):
+            stats = fetch_page(dests["page"], work / "client2", port,
+                               path="/page/stats.mu")
+            check_stats(stats, dests["page"])
+        # The pill reads NOT VERIFIED until someone checks, and turns OK after a
+        # probe in another process attests that the answer arrived. That is the
+        # whole service-status claim, observed over the wire rather than asserted
+        # about a rendered string.
+        if "NOT VERIFIED" not in stats:
+            raise RuntimeError("stats page did not start out unverified")
+        with stage("ping", done):
+            ping_roundtrip(games[GAME], work / "probe", port)
+            verified = fetch_page(dests["page"], work / "client4", port,
+                                  path="/page/stats.mu")
+            if "OK" not in verified:
+                raise RuntimeError("stats page still not green after an "
+                                   "attested round trip")
         # fetch, not browse: a file response, and the default output path
         with stage("fetch", done):
             blob = fetch_default_out(dests["page"], work / "client3", port,
                                     "/page/stats.mu")
             if b"activity" not in blob:
                 raise RuntimeError("fetched stats page has no activity heading")
-        with stage("stats", done):
-            stats = fetch_page(dests["page"], work / "client2", port,
-                               path="/page/stats.mu")
-            check_stats(stats, dests["page"])
         print(f"canary: {len(times)} turns in {time.time() - t0:.1f}s ("
               + ", ".join(f"{t:.1f}s" for t in times) + ")", file=sys.stderr)
         return times
@@ -393,7 +423,7 @@ def main():
     try:
         try:
             times = probe(work, done)
-            print(f"canary OK page=1 stats=1 fetch=1 turns={len(times)}/{len(TURNS)} "
+            print(f"canary OK page=1 stats=1 ping=1 fetch=1 turns={len(times)}/{len(TURNS)} "
                   f"slowest={max(times):.1f}s total={time.time() - t0:.0f}s")
             return 0
         except Exception as e:

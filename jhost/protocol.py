@@ -454,6 +454,56 @@ DIV = "-"
 MAPPER_LINK = (VIOLET + "`[Droid-Mapper (Android map helper)`"
                + "https://github.com/jrodder/Droid-Mapper]" + RESET)
 
+# --- Service status ---------------------------------------------------------
+# The one operational element on the player-facing page, so its colour means
+# exactly one thing. A page rendered by the host proves the host is awake; it
+# proves nothing about a reply reaching a player, which is the direction that
+# actually breaks silently. So green is not self-reported: it requires an
+# external client to have asked for a turn-shaped round trip and reported back
+# that the answer arrived (ping-ack, below). Amber is "nothing is known to be
+# wrong, and nobody has asked lately", and it is deliberately not red — a
+# two-colour indicator would have to call an unchecked node healthy, which is
+# how a monitoring page starts lying.
+PING = "ping"
+PING_ACK = "ping-ack"
+
+PILL_OK = "`B131`Faf8`!"           # pale green on green
+PILL_DOWN = "`B300`Ffa8`!"         # pale red on red
+PILL_UNVERIFIED = "`B330`Ffd9`!"   # warm yellow on amber
+
+
+def ping_reply(boot, games):
+    """The answer to a ping: enough for the probe to match against the node it
+    addressed, and nothing a visitor could not already read on the page."""
+    return f"jhost ok boot={boot} games={games}"
+
+
+def service_status(faults=(), verified_at=None, now=None):
+    """The status pill: OK / DOWN / NOT VERIFIED, with the reason or the age of
+    the last verification beside it.
+
+    A fault outranks a fresh green on purpose: a story file that vanished is a
+    fact about the node, while a successful round trip is one piece of evidence
+    about one message. Age is printed, never coloured — how long since anyone
+    checked is information, not a threshold to exceed."""
+    faults = [f for f in (faults or ()) if f]
+    if faults:
+        pill, word = PILL_DOWN, "DOWN"
+    elif verified_at is not None:
+        pill, word = PILL_OK, "OK"
+    else:
+        pill, word = PILL_UNVERIFIED, "NOT VERIFIED"
+    line = pill + " " + word + " " + CLOSE_BAR
+    if faults:
+        detail = CLAY + "; ".join(faults[:2]) + RESET
+        if len(faults) > 2:
+            detail += CLAY + f" (+{len(faults) - 2} more)" + RESET
+    elif verified_at is not None:
+        detail = GREY + "verified " + ago(verified_at, now) + RESET
+    else:
+        detail = GREY + "no external check reported yet" + RESET
+    return line + "  " + detail
+
 
 def render_page(name, games, stats, manuals=None, guestbook=None,
               names=None, stats_page=None):
@@ -604,7 +654,8 @@ def _day_label(day):
         return day
 
 
-def render_stats(name, stats, activity=None, back=None, names=None, now=None):
+def render_stats(name, stats, activity=None, back=None, names=None,
+               now=None, service=None):
     """The activity page (spec §6): the per-game and per-day breakdown that is
     too long for the main page, one link away. Pure, rendered per request like
     the page and the board, so there is nothing to invalidate.
@@ -621,6 +672,12 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None):
     not tied to any identity shown."""
     now = time.time() if now is None else now
     lines = [BAR_TITLE + name + " — activity" + CLOSE_BAR, DIV]
+    if service is not None:
+        # first thing on the page, because it is the only line here that can
+        # tell a visitor the node is not merely quiet
+        lines.append(service_status(service.get("faults"),
+                                   service.get("verified_at"), now))
+        lines.append(DIV)
     # Same rule as the main page's odometer bar: players shows its honest 0 on
     # a new node, and a count that would read 0 appears only once it is real —
     # a number that appears, vanishes and reappears lower reads as a fault.

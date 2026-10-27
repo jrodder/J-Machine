@@ -8,12 +8,13 @@ per-turn autosave already persisted the state."""
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import RNS
 
 from .client import Client, parse_page
-from jhost.protocol import unpretty  # stdlib-only helper
+from jhost.protocol import PING, PING_ACK, unpretty  # stdlib-only helpers
 
 
 def cmd_scan(a):
@@ -115,6 +116,38 @@ def cmd_fetch(a):
     return 0
 
 
+def cmd_ping(a):
+    """One round trip, shaped exactly like one of a player's turns: an LXMF
+    message to a game address, the reply waited for, an ack sent back.
+
+    The ack is the point. The host cannot see a client collect a reply, so its
+    own delivery callback says only that the transfer finished; an outside
+    checker that received the answer and says so is the only attestation that
+    the outbound leg worked, and the ack is itself inbound traffic, so it
+    cannot be faked from the server side.
+
+    Nothing here writes a save slot or a ledger line on the host (see
+    tests/test_ping.py), which is what makes it safe to run against a live node
+    without inflating the numbers on its own page."""
+    c = Client(a.data_dir, a.identity, name="jprobe", port=a.port)
+    addr = unpretty(a.game_address)
+    t0 = time.time()
+    c.send(addr, PING.encode(), "ping")
+    reply = c.wait_reply(0, timeout=a.wait)
+    if reply is None:
+        # inbound worked (the message left here); the answer never came back
+        print(f"ping FAIL stage=reply waited={a.wait}s", file=sys.stderr)
+        return 1
+    if "jhost ok" not in reply:
+        print(f"ping FAIL stage=content reply={reply[:60]!r}", file=sys.stderr)
+        return 1
+    boot = reply.partition("boot=")[2].split()[0] if "boot=" in reply else ""
+    c.send(addr, f"{PING_ACK} {boot}".encode(), "ping")
+    print(f"ping OK rtt={time.time() - t0:.0f}s boot={boot} reply={reply[:70]}")
+    return 0
+
+
+
 def out_path(explicit, page_path):
     """Where `fetch` writes: --out when given, otherwise the basename of the
     requested path, in the working directory.
@@ -178,10 +211,20 @@ if __name__ == "__main__":
     s.add_argument("--data-dir", default=".jclient")
     s.add_argument("--identity", default=".jclient/identity")
     s.add_argument("--port", type=int, default=4242)
+    s = sub.add_parser("ping")
+    s.add_argument("game_address")
+    s.add_argument("--wait", type=int, default=300,
+                   help="seconds to wait for the answer (spec §2: minutes is "
+                        "normal on a LoRa-paced mesh, so this is not a timeout "
+                        "in the latency sense)")
+    s.add_argument("--data-dir", default=".jclient")
+    s.add_argument("--identity", default=".jclient/identity")
+    s.add_argument("--port", type=int, default=4242)
     s = sub.add_parser("smoke")
     s.add_argument("--data-dir", required=True)
     s.add_argument("--host-json", required=True)
     s.add_argument("--port", type=int, default=4242)
     a = ap.parse_args()
     sys.exit({"scan": cmd_scan, "browse": cmd_browse, "play": cmd_play,
-              "fetch": cmd_fetch, "smoke": cmd_smoke}[a.cmd](a))
+              "fetch": cmd_fetch, "ping": cmd_ping,
+              "smoke": cmd_smoke}[a.cmd](a))

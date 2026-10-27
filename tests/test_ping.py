@@ -1,0 +1,136 @@
+"""The ping verb (service status): an external check that must leave no trace in
+player data. The rule it exists to enforce is that a health probe cannot inflate
+the numbers it is checking, so every test here asserts on the ledger file and the
+save tree, not only on the reply text. RNS is faked; the live path is the
+canary's job."""
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+import jhost.host as host_mod
+from jhost.host import Host
+from jhost.protocol import PING, PING_ACK, ping_reply
+
+
+class Msg:
+    def __init__(self, text):
+        self.source_hash = b"\xab" * 16
+        self.signature_validated = True
+        self.unverified_reason = None
+        self.packed = b""
+        self._text = text
+
+    def content_as_string(self):
+        return self._text
+
+
+class Ident:
+    hash = b"\xcd" * 16
+
+
+class FakeRNS:
+    class Identity:
+        @staticmethod
+        def recall(h):
+            return Ident()
+
+    class Transport:
+        @staticmethod
+        def await_path(h, timeout=None):
+            return True
+
+    class Destination:
+        OUT = 0
+        SINGLE = 0
+
+        def __init__(self, *a, **k):
+            pass
+
+
+class FakeLXMessage:
+    sent = []
+
+    def __init__(self, dest, source, content=None, title=None):
+        FakeLXMessage.sent.append(content)
+
+    def register_delivery_callback(self, cb):
+        pass
+
+
+class Router:
+    def __init__(self):
+        self.out = []
+
+    def handle_outbound(self, m):
+        self.out.append(m)
+
+
+class Ping(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory()
+        games = Path(self.d.name) / "games"
+        games.mkdir()
+        self._rns, self._lx = host_mod.RNS, host_mod.LXMessage
+        host_mod.RNS, host_mod.LXMessage = FakeRNS, FakeLXMessage
+        FakeLXMessage.sent = []
+        self.host = Host(Path(self.d.name) / "data", games)
+        self.host.routers = {"zork1": Router()}
+        self.host.destinations = {"zork1": object()}
+
+    def tearDown(self):
+        host_mod.RNS, host_mod.LXMessage = self._rns, self._lx
+        self.d.cleanup()
+
+    def rows(self):
+        p = Path(self.d.name) / "data" / "ledger.jsonl"
+        if not p.exists():
+            return []
+        return [json.loads(l) for l in p.read_text().splitlines()]
+
+    def slots(self):
+        root = Path(self.d.name) / "data" / "saves"
+        return [] if not root.exists() else list(root.glob("*/*"))
+
+    def test_a_ping_writes_no_ledger_record(self):
+        self.host._on_message("zork1", Msg(PING))
+        self.assertEqual(self.rows(), [],
+                         "a ping must not appear as a turn or an outcome")
+
+    def test_a_ping_writes_no_save_slot(self):
+        self.host._on_message("zork1", Msg(PING))
+        self.assertEqual(self.slots(), [])
+
+    def test_a_ping_is_not_counted_as_inbound_traffic(self):
+        self.host._on_message("zork1", Msg(PING))
+        self.assertEqual(self.host.stats["inbound"], 0)
+        self.assertEqual(self.host.stats["pings"], 1)
+        self.assertIsNotNone(self.host.stats["last_ping"])
+
+    def test_the_reply_names_the_boot_and_the_game_count(self):
+        self.host._on_message("zork1", Msg(PING))
+        self.assertEqual(FakeLXMessage.sent,
+                         [ping_reply(self.host.ledger.boot, 0).encode()])
+
+    def test_an_ack_marks_the_round_trip_and_records_nothing(self):
+        # The ack is the only attestation anywhere that the outbound leg
+        # reached a client, so it has to land -- and it still writes no turn.
+        self.host._on_message("zork1", Msg(PING_ACK + " " + self.host.ledger.boot))
+        self.assertEqual(self.host.stats["acks"], 1)
+        self.assertIsNotNone(self.host.stats["last_roundtrip_ok"])
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(FakeLXMessage.sent, [])   # never answered: no loop
+
+    def test_a_real_turn_is_still_recorded(self):
+        self.host._on_message("zork1", Msg("north"))
+        self.assertIn("open", [r["state"] for r in self.rows()])
+
+    def test_a_player_typing_the_word_ping_in_a_sentence_is_not_a_ping(self):
+        # exact match, not prefix: "ping the wizard" is a turn
+        self.host._on_message("zork1", Msg(PING + " the wizard"))
+        self.assertIn("open", [r["state"] for r in self.rows()])
+        self.assertEqual(self.host.stats["pings"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
