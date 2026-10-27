@@ -308,6 +308,24 @@ class PlayerStatsTests(unittest.TestCase):
             g = st.per_game["zork1"]
             self.assertEqual((g.explorers, g.won, g.turns), (3, 0, 3))
 
+    def test_repeat_players_are_counted_per_slot_and_per_identity(self):
+        """Two counts, deliberately not the same number: a game's row counts slots
+        in that game, the page's headline line counts identities whose moves across
+        the whole tree add to more than one. Someone who poked two games once each
+        stayed away from both and came back to the node, so they count once, at the
+        node — and not in either game."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._slot(root, "zork1", "aa" * 16, meta={"turns": 9})
+            self._slot(root, "zork1", "bb" * 16, meta={"turns": 1})
+            self._slot(root, "zork1", "cc" * 16, meta={"turns": 1})
+            self._slot(root, "planetfall", "cc" * 16, meta={"turns": 1})
+            st = player_stats(root)
+            self.assertEqual(st.per_game["zork1"].repeat, 1)      # aa only
+            self.assertEqual(st.per_game["planetfall"].repeat, 0)
+            self.assertEqual(st.repeat, 2)                        # aa and cc
+            self.assertEqual(st.total, 3)
+
     def test_pruning_is_reflected(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

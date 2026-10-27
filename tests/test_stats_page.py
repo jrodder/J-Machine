@@ -25,7 +25,8 @@ def stats(**games):
     return PlayerStats(per_game=per_game,
                        total=sum(g.explorers for g in per_game.values()),
                        turns=sum(g.turns for g in per_game.values()),
-                       won=sum(g.won for g in per_game.values()))
+                       won=sum(g.won for g in per_game.values()),
+                       repeat=sum(g.repeat for g in per_game.values()))
 
 
 class ActivityPage(unittest.TestCase):
@@ -48,14 +49,41 @@ class ActivityPage(unittest.TestCase):
         self.assertLess(out.index("fresh"), out.index("old"),
                         "a game nobody has touched should not lead")
 
-    def test_the_newest_players_move_count_shows_only_when_it_adds_something(self):
-        one = render_stats("J", stats(zork1=GameStats(explorers=1, turns=58,
-                                                      last_move=1.0)))
-        self.assertNotIn("last player", one)
-        many = render_stats("J", stats(
-            zork1=GameStats(explorers=4, turns=180, last_move=1.0,
-                            last_player_turns=58)))
-        self.assertIn("last player 58", many)
+    def test_a_game_row_says_how_many_players_stayed(self):
+        # The fact belongs next to the moves and players it qualifies: it is what
+        # separates 180 moves from a crowd that kept playing from 180 moves by 4
+        # people who each typed once.
+        out = P._plain(render_stats("J", stats(
+            zork1=GameStats(explorers=4, turns=180, last_move=1.0, repeat=2))))
+        self.assertIn("2 played more than once", out)
+
+    def test_the_node_line_says_how_many_stayed_beside_the_totals(self):
+        # A line under the headline, not a piece inside it: the totals count
+        # everyone who ever sent a command, which is a public node working as
+        # intended, and this sits alongside that rather than correcting it.
+        out = P._plain(render_stats("J", stats(
+            zork1=GameStats(explorers=4, turns=180, last_move=1.0, repeat=2),
+            lh=GameStats(explorers=1, turns=58, last_move=1.0, repeat=1))))
+        self.assertIn("3 of those 5 sent more than one move", out)
+        headline = [ln for ln in out.splitlines() if "5 players" in ln][0]
+        self.assertNotIn("more than one move", headline)
+
+    def test_a_node_nobody_came_back_to_says_nothing(self):
+        out = P._plain(render_stats("J", stats(
+            zork1=GameStats(explorers=4, turns=4, last_move=1.0, repeat=0))))
+        self.assertNotIn("more than one move", out)
+
+    def test_a_game_row_distinguishes_a_solo_run_from_a_crowd(self):
+        solo = P._plain(render_stats("J", stats(
+            lh=GameStats(explorers=1, turns=58, last_move=1.0, repeat=1))))
+        crowd = P._plain(render_stats("J", stats(
+            pf=GameStats(explorers=24, turns=24, last_move=1.0))))
+        self.assertIn("58 moves · 1 player", solo)
+        # a single player with 58 moves has obviously stayed; restating it would
+        # teach the reader to skip the piece when it does carry news
+        self.assertNotIn("more than once", solo)
+        self.assertIn("24 moves · 24 players", crowd)
+        self.assertNotIn("more than once", crowd)
 
     def test_an_unplayed_game_is_not_rendered_as_a_zero(self):
         out = render_stats("J", stats(quiet=GameStats()))
@@ -148,60 +176,35 @@ class ActivityPage(unittest.TestCase):
                        outcomes={"delivered": 2}, since=1.0, until=2.0)
         out = render_stats("J", stats(
             h2g2=GameStats(explorers=2, turns=9, last_move=1.0,
-                           last_player_turns=7)), activity=act,
+                           repeat=2)), activity=act,
             back="a" * 32 + ":/page/index.mu")
         body = out.replace("a" * 32, "")   # the back link target is not content
         self.assertIsNone(HASH_32.search(body))
 
-    def test_an_unknown_last_player_count_is_omitted_not_zero(self):
-        # player_stats always fills this, but a slot whose sidecar is lost has
-        # no count to show, and "last player 0 moves" would read as a fact
+    def test_a_game_nobody_came_back_to_does_not_claim_a_zero(self):
         out = render_stats("J", stats(
-            zork1=GameStats(explorers=3, turns=40, last_move=1.0,
-                            last_player_turns=0)))
-        self.assertNotIn("last player", out)
+            zork1=GameStats(explorers=3, turns=40, last_move=1.0, repeat=0)))
+        self.assertNotIn("0 played", P._plain(out))
+        self.assertNotIn("more than once", P._plain(out))
 
-    def test_a_game_line_stays_on_one_terminal_row(self):
-        # The longest real title on the production node, measured from its
-        # games/names.txt. A wrapped row reads as two games, so the row sheds
-        # pieces instead of wrapping — and the pieces it keeps are the ones that
-        # define the game, not the ones another section already says.
-        title = "Sherlock: The Riddle of the Crown Jewels"
-        out = render_stats("J", stats(
-            long=GameStats(explorers=9, turns=1240, won=4, last_move=1e12,
-                           last_player_turns=58)), names={"long": title},
-            now=1e12)
-        row = [ln for ln in out.splitlines() if title in ln][0]
-        plain = P._plain(row)
-        self.assertLessEqual(len(plain), P.ROW_WIDTH)
-        self.assertIn("1,240 moves", plain)
-        self.assertIn("9 players", plain)
-        self.assertNotIn("0 d ago", plain)
-
-    def test_a_short_title_keeps_every_piece(self):
-        out = render_stats("J", stats(
-            h2g2=GameStats(explorers=2, turns=179, won=1, last_move=1e12,
-                           last_player_turns=2)), names={"h2g2": "h2g2"},
-            now=1e12)
-        row = [ln for ln in out.splitlines() if "h2g2" in ln][0]
-        plain = P._plain(row)
-        for piece in ("179 moves", "2 players", "1 finished",
-                      "last player 2"):
-            self.assertIn(piece, plain)
-
-    def test_a_long_real_title_still_shows_the_newest_players_count(self):
-        # Seen on the live node: "Hitchhikers Guide to the Galaxy" needed 93
-        # columns with full wording, so the shedding rule dropped the count and
-        # the one game the operator plays reported less than its short-named
-        # neighbours. The pieces get trimmed before the information does.
+    def test_a_long_title_costs_nothing_because_nothing_is_dropped(self):
+        # This page is read, not tapped, and clients wrap it. Rows used to shed
+        # pieces to fit one screen row, which cost the operator's own game its
+        # statistics purely because "Hitchhikers Guide to the Galaxy" is long.
         title = "Hitchhikers Guide to the Galaxy"
         out = render_stats("J", stats(h2g2=GameStats(explorers=2, turns=179,
-                                                    last_move=1e12,
-                                                    last_player_turns=2)),
+                                                    won=1, last_move=1e12,
+                                                    repeat=2)),
                            names={"h2g2": title}, now=1e12)
         plain = P._plain([ln for ln in out.splitlines() if title in ln][0])
-        self.assertLessEqual(len(plain), P.ROW_WIDTH)
-        self.assertIn("last player 2", plain)
+        for piece in ("179 moves", "2 players", "2 played more than once",
+                      "1 finished", "last played"):
+            self.assertIn(piece, plain)
+
+    def test_recency_says_what_it_is_a_recency_of(self):
+        out = P._plain(render_stats("J", stats(
+            zork1=GameStats(explorers=2, turns=9, last_move=1e12)), now=1e12))
+        self.assertIn("last played just now", out)
 
     def test_a_fault_is_red_even_next_to_a_fresh_verification(self):
         # A story file that vanished is a fact; one successful round trip is

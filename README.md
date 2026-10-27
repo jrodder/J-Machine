@@ -197,9 +197,20 @@ no new identity and no extra announce. It renders per request from the same slot
 scan the main page uses, plus a bounded read of the ledger (256 KB of tail, not
 the whole file).
 
-Sections: server totals, per game (played games only, most recent first, with
-the newest player's own move count — a game's total hides a long solo run),
-recent days, and replies. Recent days reads the permanent day log when there is
+Sections: server totals, per game (played games only, most recent first, with how
+many of its players came back), recent days, and replies.
+
+How many of a game's players came back prints per game, beside the moves and players
+it qualifies: it is what separates `24 moves · 24 players` (24 people having a look)
+from `58 moves · 1 player` (one long afternoon), and it appears only over a crowd —
+`58 moves · 1 player` has already said the one player stayed, and a row that restates
+its own numbers trains the reader to skip the piece when it carries news. The same fact
+at node level gets its own quiet line under the totals — `27 of those 94 sent more than
+one move` — rather than a piece inside them, because the totals counting every identity
+that ever sent a command is a public node working as intended, and the extra line is
+there to be read alongside, not as a correction. What used to sit in the game rows was
+the newest player's move count, which needed a paragraph to explain, changed every time
+a stranger arrived, and said nothing about the game once they left. Recent days reads the permanent day log when there is
 one, so it shows seven days and says how far back the log goes. A day the log saw and
 recorded as empty prints `0 moves`; a day from before the log existed prints
 `no record`, because the ledger itself only remembers from the day it was introduced
@@ -217,16 +228,13 @@ how far back it actually reached and whether the byte cap left records unread.
 Nothing on the page names a player. The save tree could attribute every number to
 a destination hash, and a hash is a persistent handle on a person, so the page
 carries aggregates only (pinned by a test that fails if a 32-hex string appears).
-Real titles are long — "Sherlock: The Riddle of the Crown Jewels" is 40 columns —
-so a game line sheds its pieces rather than wrapping into what reads as two games:
-recency goes first (the list is sorted by it and Recent days repeats it), then the
-newest player's count, then finishes; moves and players never drop.
-
-The numeric pieces share one unit, so a row reads `179 moves · 2 players · last
-player 2` instead of repeating "moves" three times. That is not decoration: on a
-31-column title the repeated word is precisely what pushes the row past the limit
-and forces the count to be dropped — the wording was trimmed before the
-information was.
+Nothing on a game line is shed or abbreviated. Rows used to be trimmed to fit one
+screen row, because on the main game list a wrapped entry really does read as two
+games — but this page is read, not tapped, clients wrap it, and that trim cost the
+operator's own game its statistics purely because "Hitchhikers Guide to the Galaxy"
+is long. Pieces now say what they mean in as many words as it takes: `179 moves · 2
+players · 2 played more than once · 1 finished · last played 11 d ago`, including the
+`last played`, which a bare `11 d ago` left to be guessed.
 
 ### Is it awake? (operator)
 

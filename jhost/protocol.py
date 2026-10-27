@@ -657,7 +657,6 @@ def plural(n, one, many):
     return one if n == 1 else many
 
 
-ROW_WIDTH = 74            # one screen row per game; see _plain
 MICRON_TAG = re.compile("`[BF]" + "[0-9a-f]{3}" + "|`" + "[!bf]" + "|`")
 
 
@@ -700,9 +699,8 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None,
 
     No player is named and no hash appears: the save tree could attribute every
     one of these numbers to an identity, and a destination hash is a persistent
-    handle on a person, so this page reports aggregates only. The one exception
-    is deliberate — 'last player 58 moves' is a single slot's count, but it is
-    not tied to any identity shown."""
+    handle on a person, so this page reports aggregates only — every count on it
+    is over players, never of one player."""
     now = time.time() if now is None else now
     lines = [BAR_TITLE + name + " — activity" + CLOSE_BAR, DIV]
     # Same rule as the main page's odometer bar: players shows its honest 0 on
@@ -721,6 +719,14 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None,
     if recent:
         bar.append(GREY + "last move " + ago(recent[0], now) + RESET)
     lines.append(BAR_ODOMETER + " · ".join(bar) + CLOSE_BAR)
+    if stats.repeat:
+        # Its own line under the headline, in the page's quietest hue, rather
+        # than a piece inside it: the totals count everyone who ever sent a
+        # command — which is the node working, curious visitors being what it is
+        # for — and this says how many of them stayed. Same fact, not framed as
+        # a correction of the number above it.
+        lines.append("  " + GREY + f"{stats.repeat:,} of those {stats.total:,}"
+                     + " sent more than one move" + RESET)
 
     played = sorted(((stem, g) for stem, g in stats.per_game.items()
                      if g.last_move), key=lambda kv: -kv[1].last_move)
@@ -732,32 +738,23 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None,
                      + plural(g.turns, "move", "moves") + RESET,
                      TEAL + f"{g.explorers} "
                      + plural(g.explorers, "player", "players") + RESET]
-            # One screen row per game, and real titles are long ("Sherlock: The
-            # Riddle of the Crown Jewels" is 40 columns), so the pieces have to
-            # be droppable rather than hopeful. They are listed least-dispensable
-            # last and shed from the end: recency first (the list is already
-            # sorted by it and 'Recent days' says it again), then the newest
-            # player's count, then finishes. Moves and players never drop.
+            # Nothing is dropped and nothing is abbreviated to fit. This page is
+            # read, not tapped, and clients wrap it: an earlier version shed
+            # pieces to stay inside one screen row, which cost the operator's own
+            # game its statistics because its title is long. Words are cheaper
+            # than a number nobody can decode.
             pieces = []
+            if g.repeat and g.explorers > 1:
+                # only over a crowd: "58 moves · 1 player" has already said that
+                # the one player stayed, and a row that restates its own numbers
+                # teaches the reader to skim past the piece that would matter
+                pieces.append(CLAY + f"{g.repeat} played more than once" + RESET)
             if g.won:
                 pieces.append(GREEN + f"{g.won} finished" + RESET)
-            if g.explorers > 1 and g.last_player_turns:
-                # a game's total hides a long solo run
-                # No unit repeated: every numeric piece on this row counts
-                # moves already, and the word is the difference between showing
-                # the number and shedding it on a long title.
-                pieces.append(CLAY + f"last player {g.last_player_turns:,}"
-                              + RESET)
-            pieces.append(GREY + ago(g.last_move, now) + RESET)
+            pieces.append(GREY + "last played " + ago(g.last_move, now) + RESET)
             label = (names or {}).get(stem, stem)
-            keep = pieces[:]
-            while True:
-                row = ("  " + AMBER + label + RESET + "  "
-                       + " · ".join(parts + keep))
-                if len(_plain(row)) <= ROW_WIDTH or not keep:
-                    break
-                keep = keep[:-1]
-            lines.append(row)
+            lines.append("  " + AMBER + label + RESET + "  "
+                         + " · ".join(parts + pieces))
 
     # Two sources for the same section, and the durable one wins. `days` is the
     # permanent day log (jhost/rollup.py): every day since it started, including
@@ -859,9 +856,11 @@ class GameStats:
     won: int = 0
     turns: int = 0
     last_move: float = 0.0
-    # the move count of the player whose slot is newest in this game: a game's
-    # total hides a long solo run, and the stats page wants both (spec §6)
-    last_player_turns: int = 0
+    # players who sent more than one move in this game. "24 moves · 24 players"
+    # and "24 moves · 1 player" are different servers, and the pair alone does
+    # not say which this is; this does, and unlike the newest player's count it
+    # stays true after that player leaves (spec §6)
+    repeat: int = 0
 
 
 @dataclasses.dataclass
@@ -870,6 +869,10 @@ class PlayerStats:
     total: int      # all-time unique players, all games (one identity, N games = 1)
     turns: int = 0  # moves fed, all games
     won: int = 0    # players who finished, all games
+    # identities whose moves across ALL games add to more than one, counted per
+    # identity so someone who poked two games once each is counted once — for
+    # them, coming back to the node is the true thing that happened
+    repeat: int = 0
 
 
 def player_stats(saves_root):
@@ -883,18 +886,18 @@ def player_stats(saves_root):
     sum and the moves.json floor, so losing metadata cannot walk the odometer
     backwards. A missing dir is the fresh-host state: no per-game entries,
     zeros."""
-    per_game, identities = {}, set()
+    per_game, identities, fed = {}, set(), {}
     for p in sorted(Path(saves_root).glob("*/*.zmsv")):
         m = _read_meta_json(p.with_suffix(".json"))
         g = per_game.setdefault(p.parent.name, GameStats())
+        slot_turns = _count(m.get("turns")) or 1
         g.explorers += 1
-        g.turns += _count(m.get("turns")) or 1
+        g.turns += slot_turns
+        g.repeat += 1 if slot_turns > 1 else 0
         g.won += 1 if m.get("won") else 0
-        mtime = p.stat().st_mtime
-        if mtime >= g.last_move:
-            g.last_move = mtime
-            g.last_player_turns = _count(m.get("turns")) or 1
+        g.last_move = max(g.last_move, p.stat().st_mtime)
         identities.add(p.stem)
+        fed[p.stem] = fed.get(p.stem, 0) + slot_turns
     derived = sum(g.turns for g in per_game.values())
     path = _moves_path(saves_root)
     floor = _read_moves(saves_root)
@@ -911,7 +914,8 @@ def player_stats(saves_root):
         g = per_game.setdefault(game, GameStats())
         g.won = max(g.won, len({s for s in seen if isinstance(s, str)}))
     return PlayerStats(per_game, len(identities), max(floor, derived),
-                       sum(g.won for g in per_game.values()))
+                       sum(g.won for g in per_game.values()),
+                       sum(1 for n in fed.values() if n > 1))
 
 
 def write_rns_config(config_dir, role, port=4242, instance_name=None,
