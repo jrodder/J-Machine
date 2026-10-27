@@ -1,0 +1,23 @@
+[Unit]
+Description=Ask the J-Machine host for a round trip, from outside it
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+RandomizedDelaySec=10min
+Persistent=true
+AccuracySec=1min
+
+# Hourly, and the cadence is the mesh's rather than a taste for freshness: every
+# probe run announces the probe's own delivery destination, because the host can
+# only route a reply to a destination it can recall (spec §7). RNS hubs refuse to
+# rebroadcast a destination announced faster than about once an hour, so a
+# 5-minute probe mostly sends announcements that are dropped. The same limit is
+# why jhost.service caps its own restarts at 6/hour.
+#
+# What a slower cadence costs is detection latency, not resolution: a probe that
+# fails is recorded as a failure the moment it fails, so the page goes red
+# immediately at the moment the check was attempted.
+
+[Install]
+WantedBy=timers.target

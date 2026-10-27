@@ -225,6 +225,12 @@ def ping_roundtrip(game_addr, work, port):
         raise RuntimeError(f"ping exit {rc}: {out.strip()[-300:]}")
     if "ping OK" not in out:
         raise RuntimeError(f"ping did not report success: {out.strip()[-200:]}")
+    # The ack has to be reported DELIVERED, not merely sent: it is the last thing
+    # the client does, so a client that exits without watching the transfer loses
+    # it. Loopback is fast enough to hide that -- it did once -- which is why the
+    # canary checks the receipt rather than only the reply.
+    if "ack=delivered" not in out:
+        raise RuntimeError(f"ack was not delivered: {out.strip()[-200:]}")
     return out.strip().splitlines()[-1]
 
 

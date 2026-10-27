@@ -20,6 +20,7 @@ from . import guestbook
 from . import window
 from .ledger import Ledger
 from .logs import LogFilter
+from .probe import read_probe
 from .protocol import (DEST_JSON, PING, PING_ACK, FileSaveStore,
                        handle_message, ping_reply, player_stats, render_page,
                        render_stats, write_rns_config)
@@ -481,6 +482,14 @@ class Host:
         errs = h["page_errors"] + h["stats_errors"]
         if errs:
             faults.append(f"{errs} page render failure{'s' if errs > 1 else ''}")
+        # A failed external check is a fault only until a later round trip
+        # succeeds; after that it is history, and history belongs in the ledger,
+        # not on the face of the page. Without this rule the pill would sit on
+        # whichever verdict arrived first.
+        if (h.get("probe_ok") is False
+                and (h.get("probe_t") or 0) > (h.get("last_roundtrip_ok") or 0)):
+            faults.append("external check failed: "
+                          + (h.get("probe_detail") or "no detail recorded"))
         return {"faults": faults, "verified_at": h.get("last_roundtrip_ok")}
 
     def _serve(self, stem, sender, short, msg, seq):
@@ -665,6 +674,12 @@ class Host:
             "sessions": len(self.sessions),
             "ledger_unresolved": len(self.ledger.unresolved()),
         }
+        # The last external check, if anyone has run one. Read here rather than
+        # at render time so the page and health.json answer from one snapshot.
+        probe = read_probe(self.data_dir)
+        health["probe_ok"] = None if probe is None else bool(probe.get("ok"))
+        health["probe_t"] = (probe or {}).get("t")
+        health["probe_detail"] = (probe or {}).get("detail")
         health.update(self.stats)
         return health
 

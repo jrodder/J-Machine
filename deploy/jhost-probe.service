@@ -1,0 +1,21 @@
+[Unit]
+Description=J-Machine external probe (one ping round trip against the live host)
+After=jhost.service
+Wants=jhost.service
+
+[Service]
+Type=oneshot
+User=jrod
+WorkingDirectory=/home/jrod/J-Machine
+# Deliberately a different process from jhost, not a timer inside it: a check
+# that runs inside the thing it checks can only repeat what that thing already
+# believes. This one asks the live host for a round trip and records the answer
+# in data/probe.json, which is what lets a FAILURE turn the activity page's
+# status pill red -- green needs no file, because a successful round trip sends
+# the host an ack it counts itself.
+ExecStart=/home/jrod/J-Machine/.venv/bin/python -m jhost.probe --data-dir data
+# The probe's own ceiling is the client wait plus margin (wait + 180 s). Give it
+# more than that so the client always gets to decide the verdict: if systemd
+# kills it first, a reply that was merely slow on a LoRa-paced mesh is recorded
+# as a failure, and the page goes red over something that is not broken.
+TimeoutStartSec=900

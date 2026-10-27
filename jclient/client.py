@@ -107,6 +107,13 @@ class Client:
         return got[0] if got else None
 
     def send(self, game_addr, content, title):
+        """Queue one message and return it, so the caller can watch it leave.
+
+        handle_outbound only queues the message (LXMF 0.5.11). A process that
+        exits while it is still OUTBOUND throws it away without saying so. Over
+        loopback the transfer can finish inside this call, which is why a fast
+        test can pass without ever proving the point; on a real path a link
+        handshake comes first and takes seconds."""
         if isinstance(content, str): content = content.encode()
         ident = self.recall(game_addr, "game address")
         dest = RNS.Destination(ident, RNS.Destination.OUT,
@@ -114,6 +121,27 @@ class Client:
         m = LXMessage(dest, self.dest,
                       content=content, title=title)
         self.router.handle_outbound(m)
+        return m
+
+    def wait_delivered(self, msg, timeout=240):
+        """Block until the transfer reaches a terminal state, and say which one.
+
+        Anything sent as the last act of a process needs this: the ping probe's
+        ack is exactly that, and an unwatched exit loses it silently. Measured on
+        the live host: two pings answered, zero acks recorded."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            # .state, not .status (there is no .status). It walks GENERATING ->
+            # OUTBOUND -> SENDING -> SENT -> DELIVERED, and the router's
+            # fail_message sets FAILED on it; REJECTED and CANCELLED are the
+            # other ways a transfer ends without arriving.
+            if msg.state == LXMessage.DELIVERED:
+                return "delivered"
+            if msg.state in (LXMessage.FAILED, LXMessage.REJECTED,
+                             LXMessage.CANCELLED):
+                return "failed"
+            time.sleep(2)
+        return "timeout"
 
     def wait_reply(self, after_index, timeout=90):
         """Block until more than `after_index` replies have arrived; return

@@ -205,6 +205,63 @@ player 2` instead of repeating "moves" three times. That is not decoration: on a
 and forces the count to be dropped — the wording was trimmed before the
 information was.
 
+### Is it awake? (operator)
+
+Three instruments, answering three different versions of the question.
+
+`data/health.json`, rewritten every 60 s from inside the host, lists what has to
+be true for the next player to be served: story files present, save store
+writable, an interface online, disk free, no turn left with no outcome. Those are
+capability checks, deliberately not traffic rates — from counters alone a healthy
+node with no players is indistinguishable from a dead one. It says nothing about
+whether the mesh can reach this host, because there is no inside view of that.
+
+`jclient ping <game address>` is one round trip shaped exactly like one of a
+player's turns: an LXMF message in, the answer waited for, an ack sent back. The
+ack is the point. The host's own delivery callback proves only that a transfer
+finished; an ack comes from the receiving side, which makes it the only evidence
+anywhere that a reply reached a client — and it is inbound traffic, so it cannot
+be faked from the server. The verb is answered before any ledger record is
+opened: no slot, no meta, no move counted, because a health check must not
+inflate the numbers on the page it is being checked against.
+
+`jhost.probe` runs that ping on a timer and writes the outcome to
+`data/probe.json`. It is a separate process, not a loop inside `jhost`, because a
+check that runs inside the thing it checks can only repeat what that thing already
+believes. Install it with:
+
+```
+sudo cp deploy/jhost-probe.service deploy/jhost-probe.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now jhost-probe.timer
+systemctl list-timers jhost-probe.timer          # when it next runs
+.venv/bin/python -m jhost.probe --data-dir data  # one run, now
+```
+
+It addresses the same game every run — first in sorted order — so a failure never
+depends on which story happened to be unlucky (`--game` to choose). By default it
+reaches the host over loopback; to make the check go out to a public hub and come
+back, like a player's traffic does, write `data/probe/rns/config` by hand. It is
+never overwritten, so an operator-authored config wins.
+
+The activity page leads with one pill, and its colour means exactly one thing:
+
+- `[ OK ]` — a client outside this process confirmed an answer arrived, this boot.
+- `[ NOT VERIFIED ]` — nothing is known to be wrong and nobody has asked. Not a
+  fault, and not a green light either.
+- `[ DOWN ]` — a fault: a story file missing, the save store unwritable, a turn
+  with no outcome, no interface online, page render failures, or a probe that
+  failed since the last good round trip.
+
+Two rules keep it honest. A fault outranks a recent success, because a vanished
+story file is a fact while one good round trip is evidence about one message. And
+age is printed (`verified 43 min ago`) rather than coloured, so nobody has to
+invent an expiry time and watch a healthy node turn red for being quiet. A
+restart clears the ack — the pill goes amber until the next probe, which is the
+correct verdict for a process that has never yet answered anyone.
+
+What none of them can prove is that a particular player's client is collecting
+replies. A probe proves the path as far as the machine it ran on.
+
 ### Guestbook (operator)
 
 One board for the whole server, linked from the top of the page
@@ -252,8 +309,11 @@ is serving, plays five real Zork I turns through `jclient play`, and confirms
 each turn produced a reply and reached an outcome in the ledger. One line out,
 exit 0 only if the whole path worked; every wait is bounded and everything it
 starts is torn down even if the canary is killed. `CANARY_KEEP=1` leaves the
-temp logs for a post-mortem. It is a systemd-timer-shaped command, not a unit
-test (it is slow and needs LXMF).
+temp logs for a post-mortem. It is a command,
+not a unit test (it is slow and needs LXMF), and it is run by hand: before a
+deploy and after anything touches the message path. The timer-shaped check is
+`jhost.probe`, above, and the two do not substitute for each other — the canary
+starts its own host, so it catches code rot and never sees the live process.
 
 What it cannot prove is the thing no on-box check can: that the public mesh can
 reach this host, or that a human read a reply. A green canary means "this

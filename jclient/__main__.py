@@ -142,8 +142,19 @@ def cmd_ping(a):
         print(f"ping FAIL stage=content reply={reply[:60]!r}", file=sys.stderr)
         return 1
     boot = reply.partition("boot=")[2].split()[0] if "boot=" in reply else ""
-    c.send(addr, f"{PING_ACK} {boot}".encode(), "ping")
-    print(f"ping OK rtt={time.time() - t0:.0f}s boot={boot} reply={reply[:70]}")
+    # The ack is the last thing this process does, so it has to be watched:
+    # handle_outbound only queues, and exiting now drops it silently. Measured on
+    # the live host before that was true -- two pings answered, zero acks.
+    ack = c.wait_delivered(c.send(addr, f"{PING_ACK} {boot}".encode(), "ping"),
+                           timeout=a.ack_wait)
+    # Still success even if the ack itself got lost. What was measured is that
+    # the host answered a ping; a receipt that failed to arrive on a slow mesh is
+    # not evidence that anything is wrong with the node, and calling it a fault
+    # would turn the page red over paperwork. The node then simply stays NOT
+    # VERIFIED, which is the honest reading, and the reason is on this line for
+    # whoever has to look.
+    print(f"ping OK rtt={time.time() - t0:.0f}s boot={boot} ack={ack} "
+          f"reply={reply[:70]}")
     return 0
 
 
@@ -217,9 +228,13 @@ if __name__ == "__main__":
                    help="seconds to wait for the answer (spec §2: minutes is "
                         "normal on a LoRa-paced mesh, so this is not a timeout "
                         "in the latency sense)")
+    s.add_argument("--ack-wait", type=int, default=240,
+                   help="seconds to stay alive for the ack to be delivered "
+                        "(exiting earlier drops it)")
     s.add_argument("--data-dir", default=".jclient")
     s.add_argument("--identity", default=".jclient/identity")
     s.add_argument("--port", type=int, default=4242)
+
     s = sub.add_parser("smoke")
     s.add_argument("--data-dir", required=True)
     s.add_argument("--host-json", required=True)

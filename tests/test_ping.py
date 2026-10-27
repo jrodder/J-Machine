@@ -8,7 +8,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import jclient.client as client_mod
 import jhost.host as host_mod
+from jclient.client import Client
 from jhost.host import Host
 from jhost.protocol import PING, PING_ACK, ping_reply
 
@@ -64,6 +66,68 @@ class Router:
 
     def handle_outbound(self, m):
         self.out.append(m)
+
+
+class FakeTime:
+    """Advances on every reading so a wait loop can be exercised at all: the
+    deadline is computed once, each poll moves the clock."""
+
+    def __init__(self, start=0.0, step=5.0):
+        self.t, self.step = start, step
+
+    def time(self):
+        v = self.t
+        self.t += self.step
+        return v
+
+    def sleep(self, _s):
+        pass
+
+
+class WatchedMsg:
+    def __init__(self, script):
+        self.script = script
+        self.i = 0
+
+    @property
+    def state(self):
+        s = self.script[min(self.i, len(self.script) - 1)]
+        self.i += 1
+        return s
+
+
+class AckDelivery(unittest.TestCase):
+    """The bug this class exists for: the ack is the last thing a probe sends,
+    and handle_outbound only queues. Exiting without watching the transfer loses
+    it silently -- measured on the live host as two pings answered, zero acks.
+    Loopback can finish a transfer inside the send call, so a fast rig passed
+    without ever proving the point."""
+
+    def setUp(self):
+        self._time = client_mod.time
+        client_mod.time = FakeTime()
+
+    def tearDown(self):
+        client_mod.time = self._time
+
+    def wait(self, script, timeout=120):
+        return Client.wait_delivered(object(), WatchedMsg(script),
+                                     timeout=timeout)
+
+    def test_waits_until_the_transfer_is_delivered(self):
+        from LXMF import LXMessage
+        self.assertEqual(self.wait([LXMessage.OUTBOUND, LXMessage.SENDING,
+                                    LXMessage.DELIVERED]), "delivered")
+
+    def test_a_failed_transfer_is_not_reported_as_delivered(self):
+        from LXMF import LXMessage
+        self.assertEqual(self.wait([LXMessage.SENDING, LXMessage.FAILED]),
+                         "failed")
+
+    def test_still_in_flight_at_the_deadline_is_its_own_answer(self):
+        from LXMF import LXMessage
+        self.assertEqual(self.wait([LXMessage.OUTBOUND], timeout=60),
+                         "timeout")
 
 
 class Ping(unittest.TestCase):
