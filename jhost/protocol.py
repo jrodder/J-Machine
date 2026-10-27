@@ -479,8 +479,8 @@ def ping_reply(boot, games):
 
 
 def service_status(faults=(), verified_at=None, now=None):
-    """The status pill: OK / DOWN / NOT VERIFIED, with the reason or the age of
-    the last verification beside it.
+    """The status button: [ OK ] / [ DOWN ] / [ UNCHECKED ], with the reason or
+    the age of the last verification beside it.
 
     A fault outranks a fresh green on purpose: a story file that vanished is a
     fact about the node, while a successful round trip is one piece of evidence
@@ -492,8 +492,10 @@ def service_status(faults=(), verified_at=None, now=None):
     elif verified_at is not None:
         pill, word = PILL_OK, "OK"
     else:
-        pill, word = PILL_UNVERIFIED, "NOT VERIFIED"
-    line = pill + " " + word + " " + CLOSE_BAR
+        pill, word = PILL_UNVERIFIED, "UNCHECKED"
+    # bracketed and colour-banded, so it reads as a control rather than as a
+    # sentence that happens to be coloured
+    line = pill + "[ " + word + " ]" + CLOSE_BAR
     if faults:
         detail = CLAY + "; ".join(faults[:2]) + RESET
         if len(faults) > 2:
@@ -672,12 +674,6 @@ def render_stats(name, stats, activity=None, back=None, names=None,
     not tied to any identity shown."""
     now = time.time() if now is None else now
     lines = [BAR_TITLE + name + " — activity" + CLOSE_BAR, DIV]
-    if service is not None:
-        # first thing on the page, because it is the only line here that can
-        # tell a visitor the node is not merely quiet
-        lines.append(service_status(service.get("faults"),
-                                   service.get("verified_at"), now))
-        lines.append(DIV)
     # Same rule as the main page's odometer bar: players shows its honest 0 on
     # a new node, and a count that would read 0 appears only once it is real —
     # a number that appears, vanishes and reappears lower reads as a fault.
@@ -773,6 +769,13 @@ def render_stats(name, stats, activity=None, back=None, names=None,
         lines.append(DIV)
         lines.append(BAR_BOARD + "`[Back to the game list`" + back + "]"
                      + CLOSE_BAR)
+    if service is not None:
+        # last line, below the navigation: it is a strip about the node, not
+        # something a player came here to read, and at the top it competed with
+        # the game list for the first thing a visitor sees
+        lines.append(DIV)
+        lines.append(service_status(service.get("faults"),
+                                   service.get("verified_at"), now))
     return "\n".join(lines) + "\n"
 
 

@@ -14,8 +14,9 @@ WorkingDirectory=/home/jrod/J-Machine
 # status pill red -- green needs no file, because a successful round trip sends
 # the host an ack it counts itself.
 ExecStart=/home/jrod/J-Machine/.venv/bin/python -m jhost.probe --data-dir data
-# The probe's own ceiling is the client wait plus margin (wait + 180 s). Give it
-# more than that so the client always gets to decide the verdict: if systemd
-# kills it first, a reply that was merely slow on a LoRa-paced mesh is recorded
-# as a failure, and the page goes red over something that is not broken.
-TimeoutStartSec=900
+# The client gets 10 minutes for the whole check (route discovery and the answer
+# share it) plus margin for the ack and interpreter startup, so 1200 here keeps
+# the verdict the client's: if systemd kills it first, a check that simply had
+# not finished learning routes is recorded as a failure and the page goes red
+# over nothing. Raise this together with --budget, not on its own.
+TimeoutStartSec=1200

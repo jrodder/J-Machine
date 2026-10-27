@@ -40,10 +40,11 @@ class FakeSubprocess:
 
     def __init__(self, rc=0, out="", err=""):
         self.rc, self.out, self.err = rc, out, err
-        self.calls = []
+        self.calls, self.kwargs = [], []
 
     def run(self, cmd, **kw):
         self.calls.append(cmd)
+        self.kwargs.append(kw)
         return SimpleNamespace(returncode=self.rc, stdout=self.out,
                                stderr=self.err)
 
@@ -106,12 +107,24 @@ class Running(unittest.TestCase):
         self.assertIn(str(self.dir / "probe" / "identity"), sub.calls[0])
         self.assertIn("<bb16>", sub.calls[0])
 
+    def test_the_kill_ceiling_is_the_budget_plus_margin(self):
+        # Killing the client before its own window closes would record "hadn't
+        # happened yet" as "did not happen" — a false failure on the page. The
+        # client owns the verdict, so this ceiling has to sit above its budget.
+        sub = FakeSubprocess(0, "ping OK ack=delivered\n")
+        probe_mod.subprocess = sub
+        run(self.dir, budget=600)
+        self.assertEqual(sub.kwargs[0]["timeout"], 600 + probe_mod.ACK_MARGIN)
+        argv = sub.calls[0]
+        self.assertEqual(argv[argv.index("--budget") + 1], "600")
+        self.assertEqual(probe_mod.DEFAULT_BUDGET, 600)
+
     def test_a_timeout_is_recorded_as_a_failure_not_a_crash(self):
         class Boom(FakeSubprocess):
             def run(self, cmd, **kw):
                 raise self.TimeoutExpired(cmd, 1)
         probe_mod.subprocess = Boom()
-        r = run(self.dir, wait=1)
+        r = run(self.dir, budget=1)
         self.assertFalse(r["ok"])
         self.assertIn("killed", r["detail"])
         self.assertFalse(read_probe(self.dir)["ok"])
@@ -163,6 +176,24 @@ class ServiceFault(unittest.TestCase):
         self.assertIn("external check failed", " ".join(self.faults()))
         self.host.stats["last_roundtrip_ok"] = 2e9 + 60
         self.assertNotIn("external check failed", " ".join(self.faults()))
+
+    def test_a_successful_check_is_enough_even_with_no_ack_this_boot(self):
+        # The check proves the query arrived and the answer came back. That is
+        # not undone by the host having restarted since, so the record on disk
+        # stands on its own.
+        write_probe(self.data, {"ok": True, "t": 2e9, "detail": "ping OK"})
+        self.assertEqual(self.host._service()["verified_at"], 2e9)
+
+    def test_the_newest_evidence_wins(self):
+        write_probe(self.data, {"ok": True, "t": 2e9, "detail": "ping OK"})
+        self.host.stats["last_roundtrip_ok"] = 2e9 + 120
+        self.assertEqual(self.host._service()["verified_at"], 2e9 + 120)
+        self.host.stats["last_roundtrip_ok"] = 2e9 - 120
+        self.assertEqual(self.host._service()["verified_at"], 2e9)
+
+    def test_a_failed_check_is_no_evidence_even_if_it_ran(self):
+        write_probe(self.data, {"ok": False, "t": 2e9, "detail": "no reply"})
+        self.assertIsNone(self.host._service()["verified_at"])
 
     def test_health_carries_the_check(self):
         write_probe(self.data, {"ok": False, "t": 2e9, "detail": "no reply"})

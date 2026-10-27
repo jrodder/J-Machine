@@ -218,10 +218,10 @@ whether the mesh can reach this host, because there is no inside view of that.
 
 `jclient ping <game address>` is one round trip shaped exactly like one of a
 player's turns: an LXMF message in, the answer waited for, an ack sent back. The
-ack is the point. The host's own delivery callback proves only that a transfer
-finished; an ack comes from the receiving side, which makes it the only evidence
-anywhere that a reply reached a client — and it is inbound traffic, so it cannot
-be faked from the server. The verb is answered before any ledger record is
+client's own receipt is the proof. It got an answer, which means the query arrived
+and the reply came back — both directions in one observation. The ack is a
+courtesy copy: it lets the host count the round trip itself (`pings`/`acks` in
+health.json), and being inbound traffic it cannot be faked from the server. The verb is answered before any ledger record is
 opened: no slot, no meta, no move counted, because a health check must not
 inflate the numbers on the page it is being checked against.
 
@@ -243,10 +243,24 @@ reaches the host over loopback; to make the check go out to a public hub and com
 back, like a player's traffic does, write `data/probe/rns/config` by hand. It is
 never overwritten, so an operator-authored config wins.
 
-The activity page leads with one pill, and its colour means exactly one thing:
+Each run gets **ten minutes**, polled rather than slept through, and it returns the
+moment the answer arrives. That window covers finding a route to the host as well as
+the answer's trip, and the two cannot be separated from outside: RNS learns routes on
+its own schedule, which can be immediate or can be several minutes of listening, so a
+check that gives up sooner cannot tell "not yet" from "never". The first version
+allowed 480 seconds and filed a failure that was really just a short window.
 
-- `[ OK ]` — a client outside this process confirmed an answer arrived, this boot.
-- `[ NOT VERIFIED ]` — nothing is known to be wrong and nobody has asked. Not a
+So `[ DOWN ]` means the last check did not complete, and its detail line says what
+was missing — no route, no answer, or an answer that says the node itself is
+short-circuiting something. Read that line before concluding the machine is down.
+
+The activity page ends with one button — last line, below the back link, because
+it is a strip about the node rather than what a player came to read. Its colour
+means exactly one thing:
+
+- `[ OK ]` — the last check got through. A client outside the process put an LXMF
+  query to a game address and the engine answered.
+- `[ UNCHECKED ]` — nothing is known to be wrong and nobody has asked. Not a
   fault, and not a green light either.
 - `[ DOWN ]` — a fault: a story file missing, the save store unwritable, a turn
   with no outcome, no interface online, page render failures, or a probe that
@@ -255,9 +269,16 @@ The activity page leads with one pill, and its colour means exactly one thing:
 Two rules keep it honest. A fault outranks a recent success, because a vanished
 story file is a fact while one good round trip is evidence about one message. And
 age is printed (`verified 43 min ago`) rather than coloured, so nobody has to
-invent an expiry time and watch a healthy node turn red for being quiet. A
-restart clears the ack — the pill goes amber until the next probe, which is the
-correct verdict for a process that has never yet answered anyone.
+invent an expiry time and watch a healthy node turn red for being quiet. A restart
+does not clear it either: the record on disk is the evidence, and this process
+starting up again does not make the last successful check untrue.
+
+What green claims is narrow and worth naming: networking alive, engine answering
+requests. What it does not claim is that every story file loads (the faults above
+cover that) or that a stranger can discover the node — the probe keeps its own
+saved routes, so a run can succeed on a path both sides already have. Checking
+discovery means running a client with an empty data dir, which is a separate,
+slower question and is not what this light is for.
 
 What none of them can prove is that a particular player's client is collecting
 replies. A probe proves the path as far as the machine it ran on.

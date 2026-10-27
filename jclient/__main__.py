@@ -102,10 +102,17 @@ def cmd_fetch(a):
     """Download a file served by a page destination (manual PDF, spec §6).
     Writes the exact response bytes to --out (default: basename of path)."""
     c = Client(a.data_dir, a.identity, name="jclient", port=a.port)
-    ident = c.recall(unpretty(a.dest_address), "destination")
+    # same shape as ping: one window for the whole validation, polled, and the
+    # route wait gets what is left of it. A cold client that has not learned the
+    # route yet is not a dead node.
+    t0 = time.time()
+    deadline = t0 + a.budget
+    ident = c.recall(unpretty(a.dest_address), "destination",
+                     timeout=max(1, deadline - time.time()))
     dest = RNS.Destination(ident, RNS.Destination.OUT, RNS.Destination.SINGLE,
                            "nomadnetwork", "node")
-    data = c.request(dest, a.path, timeout=a.timeout,
+    data = c.request(dest, a.path,
+                     timeout=min(a.timeout, max(1, deadline - time.time())),
                      max_response_size=a.max_size)
     if data is None:
         print("fetch failed (no response)", file=sys.stderr)
@@ -132,11 +139,18 @@ def cmd_ping(a):
     c = Client(a.data_dir, a.identity, name="jprobe", port=a.port)
     addr = unpretty(a.game_address)
     t0 = time.time()
-    c.send(addr, PING.encode(), "ping")
-    reply = c.wait_reply(0, timeout=a.wait)
+    # One budget for the whole validation, shared by finding the route and
+    # waiting for the answer, and polled rather than slept through: it returns
+    # the moment the reply lands. How to split the two phases is not ours to
+    # guess — a cold client may know the route at once or after several minutes
+    # of listening, and the answer's own trip is paced by the mesh.
+    deadline = t0 + a.budget
+    c.send(addr, PING.encode(), "ping", deadline=deadline)
+    reply = c.wait_reply(0, timeout=max(1, deadline - time.time()))
     if reply is None:
         # inbound worked (the message left here); the answer never came back
-        print(f"ping FAIL stage=reply waited={a.wait}s", file=sys.stderr)
+        print(f"ping FAIL stage=reply waited={round(time.time() - t0)}s",
+              file=sys.stderr)
         return 1
     if "jhost ok" not in reply:
         print(f"ping FAIL stage=content reply={reply[:60]!r}", file=sys.stderr)
@@ -217,6 +231,10 @@ if __name__ == "__main__":
     s.add_argument("--out", default=None)
     s.add_argument("--max-size", type=int, default=None,
                    help="max accepted response bytes (default: no cap)")
+    s.add_argument("--budget", type=int, default=600,
+                   help="seconds for the whole check: finding the destination "
+                        "and the response share it, and it returns as soon as "
+                        "the bytes land (default: 10 minutes)")
     s.add_argument("--timeout", type=int, default=600,
                    help="seconds to wait for the link + response")
     s.add_argument("--data-dir", default=".jclient")
@@ -224,10 +242,11 @@ if __name__ == "__main__":
     s.add_argument("--port", type=int, default=4242)
     s = sub.add_parser("ping")
     s.add_argument("game_address")
-    s.add_argument("--wait", type=int, default=300,
-                   help="seconds to wait for the answer (spec §2: minutes is "
-                        "normal on a LoRa-paced mesh, so this is not a timeout "
-                        "in the latency sense)")
+    s.add_argument("--budget", type=int, default=600,
+                   help="seconds for the whole check: route discovery and the "
+                        "answer share it, and it returns as soon as the answer "
+                        "lands. A cold client learning routes can legitimately "
+                        "need most of it (spec §2: minutes is normal)")
     s.add_argument("--ack-wait", type=int, default=240,
                    help="seconds to stay alive for the ack to be delivered "
                         "(exiting earlier drops it)")

@@ -43,7 +43,8 @@ TURNS = ["look", "open mailbox", "take leaflet", "north", "south"]
 # hitting one means something is actually broken, not merely slow.
 HOST_TIMEOUT = 120      # host up + host-destinations.json written
 PAGE_TIMEOUT = 180      # page fetch: link handshake + response
-PING_TIMEOUT = 240        # ping: LXMF in, answer out, ack back
+PING_TIMEOUT = 420        # ping: budget + ack, generous because the
+                        # rig is loopback and should never need the budget
 TURN_TIMEOUT = 120      # one game line -> its reply
 EXIT_TIMEOUT = 60       # client exit after stdin close
 KILL_TIMEOUT = 10       # teardown escalation TERM -> KILL
@@ -218,7 +219,7 @@ def ping_roundtrip(game_addr, work, port):
     arrived. Returns the command's own summary line."""
     rc, out, _ = netrig.run_captured(
         [sys.executable, "-u", "-m", "jclient", "ping", game_addr,
-         "--wait", "120", "--data-dir", str(work),
+         "--budget", "240", "--ack-wait", "120", "--data-dir", str(work),
          "--identity", str(work / "identity"), "--port", str(port)],
         "ping", work, timeout=PING_TIMEOUT)
     if rc != 0:
@@ -401,7 +402,7 @@ def probe(work, done):
         # probe in another process attests that the answer arrived. That is the
         # whole service-status claim, observed over the wire rather than asserted
         # about a rendered string.
-        if "NOT VERIFIED" not in stats:
+        if "[ UNCHECKED ]" not in stats:
             raise RuntimeError("stats page did not start out unverified")
         with stage("ping", done):
             ping_roundtrip(games[GAME], work / "probe", port)

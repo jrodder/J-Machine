@@ -106,8 +106,16 @@ class Client:
             time.sleep(1)
         return got[0] if got else None
 
-    def send(self, game_addr, content, title):
+    def send(self, game_addr, content, title, deadline=None):
         """Queue one message and return it, so the caller can watch it leave.
+
+        `deadline` is the absolute time by which the route must exist, and the
+        route wait gets whatever is left of it. It returns as soon as the route
+        appears: recall polls and requests the path, so waiting longer is not
+        waiting slower. With no deadline the old 90 s applies, which is too short
+        to mean anything from a cold start — RNS learns routes on its own
+        schedule, immediate or ten minutes, and a client that gives up at 90 s
+        cannot tell either of those from a node that is gone.
 
         handle_outbound only queues the message (LXMF 0.5.11). A process that
         exits while it is still OUTBOUND throws it away without saying so. Over
@@ -115,7 +123,9 @@ class Client:
         test can pass without ever proving the point; on a real path a link
         handshake comes first and takes seconds."""
         if isinstance(content, str): content = content.encode()
-        ident = self.recall(game_addr, "game address")
+        ident = self.recall(
+            game_addr, "game address",
+            timeout=90 if deadline is None else max(1, deadline - time.time()))
         dest = RNS.Destination(ident, RNS.Destination.OUT,
                                RNS.Destination.SINGLE, "lxmf", "delivery")
         m = LXMessage(dest, self.dest,

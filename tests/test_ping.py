@@ -5,8 +5,10 @@ save tree, not only on the reply text. RNS is faked; the live path is the
 canary's job."""
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import jclient.client as client_mod
 import jhost.host as host_mod
@@ -128,6 +130,62 @@ class AckDelivery(unittest.TestCase):
         from LXMF import LXMessage
         self.assertEqual(self.wait([LXMessage.OUTBOUND], timeout=60),
                          "timeout")
+
+
+class FakeRNSForSend:
+    class Destination:
+        OUT = 1
+        SINGLE = 2
+
+        def __init__(self, *a, **k):
+            pass
+
+
+class FakeLXForSend:
+    def __init__(self, dest, source, content=None, title=None):
+        self.content = content
+
+
+class RouteWait(unittest.TestCase):
+    """send() hands the route search whatever is left of the caller's budget.
+
+    This is the difference between a node that is gone and a client that has not
+    finished learning routes: RNS can answer instantly or after several minutes,
+    so the wait has to be the whole check, polled, not a fixed 90 seconds."""
+
+    def setUp(self):
+        self._rns, self._lx = client_mod.RNS, client_mod.LXMessage
+        client_mod.RNS, client_mod.LXMessage = FakeRNSForSend, FakeLXForSend
+
+    def tearDown(self):
+        client_mod.RNS, client_mod.LXMessage = self._rns, self._lx
+
+    def wait_used(self, deadline=None):
+        seen = {}
+
+        def recall(h, what, timeout=None):
+            seen["timeout"] = timeout
+            return object()
+
+        me = SimpleNamespace(recall=recall, dest=None,
+                             router=SimpleNamespace(handle_outbound=lambda m: None))
+        Client.send(me, b"\xaa" * 16, b"ping", "ping", deadline=deadline)
+        return seen["timeout"]
+
+    def test_the_route_wait_gets_what_is_left_of_the_budget(self):
+        used = self.wait_used(deadline=time.time() + 600)
+        self.assertGreater(used, 590)
+        self.assertLessEqual(used, 600)
+
+    def test_the_budget_is_consumed_not_restarted(self):
+        # half the window already spent must halve the route wait, not hand back
+        # the full budget for a second phase
+        deadline = time.time() + 600
+        time.sleep(0.2)
+        self.assertLess(self.wait_used(deadline=deadline), 600)
+
+    def test_no_deadline_keeps_the_old_short_default(self):
+        self.assertEqual(self.wait_used(), 90)
 
 
 class Ping(unittest.TestCase):

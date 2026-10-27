@@ -37,7 +37,15 @@ PROBE_JSON = "probe.json"
 # than by the network: the client waits this long for the answer, and the
 # subprocess gets margin over it before being killed. A generous ceiling here
 # is not a latency judgement — see the note on conditions, not timelines.
-DEFAULT_WAIT = 480
+# The whole check gets this: finding a route to the host and the answer coming
+# back share it, and the client returns the moment the answer lands. Ten minutes
+# because a client that has not learned the route yet is not a dead node — RNS
+# learns routes on its own schedule, which can be immediate or can be most of
+# that window. A check shorter than this can only report "hadn't happened yet".
+DEFAULT_BUDGET = 600
+# margin over the client's own budget: the ack goes out after the answer, so the
+# subprocess needs room for it plus interpreter startup
+ACK_MARGIN = 360
 
 
 def pick_game(dests, game=None):
@@ -71,7 +79,7 @@ def write_probe(data_dir, result):
     return result
 
 
-def run(data_dir, game=None, wait=DEFAULT_WAIT, port=4242, timeout=None):
+def run(data_dir, game=None, budget=DEFAULT_BUDGET, port=4242, timeout=None):
     """Send one ping to the live host and record what came back. Returns the
     record it wrote; raises nothing the record cannot hold."""
     data_dir = Path(data_dir)
@@ -79,21 +87,21 @@ def run(data_dir, game=None, wait=DEFAULT_WAIT, port=4242, timeout=None):
     stem, addr = pick_game(dests, game)
     work = data_dir / "probe"
     work.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, "-m", "jclient", "ping", addr, "--wait", str(wait),
-           "--port", str(port), "--data-dir", str(work),
+    cmd = [sys.executable, "-m", "jclient", "ping", addr, "--budget",
+           str(budget), "--port", str(port), "--data-dir", str(work),
            "--identity", str(work / "identity")]
     t0 = time.time()
     out = ""            # the failure paths below have no stdout to parse
     try:
         p = subprocess.run(cmd, cwd=str(Path(__file__).resolve().parent.parent),
                            capture_output=True, text=True,
-                           timeout=timeout or wait + 180)
+                           timeout=timeout or budget + ACK_MARGIN)
         out = (p.stdout or "").strip()
         ok = p.returncode == 0 and "ping OK" in out
         detail = out.splitlines()[-1] if out else (
             (p.stderr or "").strip().splitlines() or [f"exit {p.returncode}"])[-1]
     except subprocess.TimeoutExpired:
-        ok, detail = False, f"killed after {timeout or wait + 180}s"
+        ok, detail = False, f"killed after {timeout or budget + ACK_MARGIN}s"
     except Exception as e:                # unreadable destinations file, no python
         ok, detail = False, f"{type(e).__name__}: {e}"
     # ack is kept apart from ok on purpose. ok answers "did the host reply to a
@@ -119,10 +127,11 @@ def main(argv=None):
                     help="which game destination to address (default: the "
                          "first in sorted order, so the check is the same one "
                          "every time)")
-    ap.add_argument("--wait", type=int, default=DEFAULT_WAIT)
+    ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
+                    help="seconds for the whole check (route + answer)")
     ap.add_argument("--port", type=int, default=4242)
     a = ap.parse_args(argv)
-    r = run(a.data_dir, game=a.game, wait=a.wait, port=a.port)
+    r = run(a.data_dir, game=a.game, budget=a.budget, port=a.port)
     print(f"probe {'OK' if r['ok'] else 'FAIL'} game={r['game']} "
           f"rtt={r['rtt']}s {r['detail']}")
     return 0 if r["ok"] else 1

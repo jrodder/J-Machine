@@ -490,7 +490,19 @@ class Host:
                 and (h.get("probe_t") or 0) > (h.get("last_roundtrip_ok") or 0)):
             faults.append("external check failed: "
                           + (h.get("probe_detail") or "no detail recorded"))
-        return {"faults": faults, "verified_at": h.get("last_roundtrip_ok")}
+        # Green is "the check ran and the engine answered", which is exactly
+        # what a successful probe record says: a client outside this process put
+        # an LXMF query to a game address and received the reply. That single
+        # fact covers both directions — the query arrived and the answer came
+        # back — so it needs no receipt to corroborate it. The ack a probe also
+        # sends is counted (pings/acks) and is the newer observation when both
+        # exist, so the newest of the two wins. Neither is required across a
+        # restart: the record on disk outlives the process, and "the last check
+        # succeeded" is not made false by this process having started since.
+        evidence = [t for t in (h.get("probe_t")
+                                if h.get("probe_ok") else None,
+                                h.get("last_roundtrip_ok")) if t]
+        return {"faults": faults, "verified_at": max(evidence) if evidence else None}
 
     def _serve(self, stem, sender, short, msg, seq):
         if not msg.signature_validated and \

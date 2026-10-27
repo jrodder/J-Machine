@@ -146,13 +146,13 @@ class ActivityPage(unittest.TestCase):
         # evidence about one message. The fact wins.
         out = P.service_status(["story file missing: zork3"],
                                verified_at=1e12, now=1e12)
-        self.assertIn("DOWN", out)
+        self.assertIn("[ DOWN ]", out)
         self.assertIn("story file missing: zork3", out)
         self.assertNotIn("OK", out)
 
     def test_a_verified_round_trip_is_green_and_says_when(self):
         out = P.service_status([], verified_at=1e12 - 7200, now=1e12)
-        self.assertIn("OK", out)
+        self.assertIn("[ OK ]", out)
         self.assertIn("verified 2 h ago", out)
 
     def test_an_unchecked_node_is_not_called_healthy(self):
@@ -160,7 +160,7 @@ class ActivityPage(unittest.TestCase):
         # which is how a monitoring page starts lying: nothing is wrong and
         # nobody has looked.
         out = P.service_status([], verified_at=None, now=1e12)
-        self.assertIn("NOT VERIFIED", out)
+        self.assertIn("UNCHECKED", out)
         self.assertNotIn(" OK ", out)
         self.assertNotIn("DOWN", out)
 
@@ -171,14 +171,12 @@ class ActivityPage(unittest.TestCase):
         self.assertIn("OK", out)
         self.assertIn("verified 7 d ago", out)
 
-    def test_the_activity_page_leads_with_the_status_line(self):
+    def test_the_status_line_is_the_last_line(self):
         out = render_stats("J", stats(),
                            service={"faults": [], "verified_at": 1e12},
-                           now=1e12)
-        plain = [P._plain(l) for l in out.splitlines()]
-        self.assertLess(plain.index([l for l in plain if "OK" in l][0]),
-                        plain.index([l for l in plain if "moves" in l
-                                     or "players" in l][0]))
+                           back="a" * 32 + ":/page/index.mu", now=1e12)
+        plain = [P._plain(l) for l in out.splitlines() if P._plain(l) != "-"]
+        self.assertIn("[ OK ]", plain[-1])
 
     def test_the_status_line_carries_no_identity(self):
         out = render_stats("J", stats(),
