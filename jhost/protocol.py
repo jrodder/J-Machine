@@ -22,8 +22,7 @@ import time
 import uuid
 from pathlib import Path
 
-from zmach.events import (EndOfGame, Error, SaveFileError, StoryFileError,
-                          Text)
+from zmach.events import Error, SaveFileError, StoryFileError, Text
 from zmach.session import Session
 from .rollup import recent as recent_days
 
@@ -112,7 +111,6 @@ class GameState:
     # page odometer pieces (spec §6), restored from the slot's metadata at
     # session start so a host restart does not reset a player's history
     turns: int = 0
-    won: bool = False
 
 
 def _read_meta_json(path):
@@ -146,7 +144,6 @@ def _count(v):
 # 17/18 are an Inform convention and most titles here are Infocom's native
 # engine, where those globals hold something else entirely.
 MOVES_FILE = "moves.json"
-WINS_FILE = "wins.json"
 AGAIN = "again"        # host verb: [Game over] is not the end of a player's interest
 _moves_lock = threading.Lock()
 
@@ -175,37 +172,6 @@ def bump_moves(saves_root):
     """One fed turn advanced the all-time move odometer."""
     with _moves_lock:
         _write_moves(saves_root, _read_moves(saves_root) + 1)
-
-
-def _wins_path(saves_root):
-    # inside the root like moves.json; the slot scan is '*/*.zmsv' so a
-    # top-level file is never mistaken for a slot
-    return Path(saves_root) / WINS_FILE
-
-
-def _read_wins(saves_root):
-    w = _read_meta_json(_wins_path(saves_root)).get("wins")
-    return w if isinstance(w, dict) else {}
-
-
-def record_win(saves_root, game, sender):
-    """A run the host saw end is remembered per (game, sender). The win flag
-    in a slot's sidecar dies with the slot -- pruning a player retired their
-    win -- and the Z-machine's end-of-run state gives no way to recover it
-    once the evidence is gone, so the witness lives in its own file."""
-    with _moves_lock:
-        wins = _read_wins(saves_root)
-        seen = wins.get(game)
-        if not isinstance(seen, list):
-            seen = []
-        if sender not in seen:
-            seen.append(sender)
-            wins[game] = seen
-            p = _wins_path(saves_root)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            tmp = p.with_name(WINS_FILE + ".tmp")
-            tmp.write_text(json.dumps({"wins": wins}))
-            os.replace(tmp, p)
 
 
 def ago(ts, now=None):
@@ -300,18 +266,12 @@ def handle_message(game, sender, text, verified, sessions, store,
     events = st.session.input(text)
     delta = _render(events)
     # Page odometer (spec §6): only a turn actually fed counts (rejections,
-    # [Game over] and empty-line status replies returned above). The win flag latches
-    # here because the Z-machine's done flag is host-side (zmach/vm.py) and
-    # is not part of the save image — this turn's EndOfGame is the only
-    # evidence a run ever ended. Metadata is its own small file, so the
-    # save_pending hold (which protects the mid-turn ZMSAVE image) does not
-    # apply: the counters advance even when the autosave holds.
+    # [Game over] and empty-line status replies returned above). Metadata is its own
+    # small file, so the save_pending hold (which protects the mid-turn ZMSAVE image)
+    # does not apply: the counters advance even when the autosave holds.
     st.turns += 1
     bump_moves(store.root)
-    if not st.won and any(isinstance(e, EndOfGame) for e in events):
-        st.won = True
-        record_win(store.root, game, sender)
-    store.save_meta(game, sender, {"turns": st.turns, "won": st.won})
+    store.save_meta(game, sender, {"turns": st.turns})
     if not st.save_pending:
         _autosave(store, game, sender, st.session)
     # first contact: the batch + this turn are all new -> send both.
@@ -326,7 +286,7 @@ def _new_game(game, sender, story_path, store, seed):
     s = Session()
     st = GameState(s, "")
     m = store.load_meta(game, sender)
-    st.turns, st.won = _count(m.get("turns")), bool(m.get("won"))
+    st.turns = _count(m.get("turns"))
     _install_handlers(s, st, store, game, sender)
     batch = s.load(str(story_path), seed=seed)
     img = store.load(game, sender)
@@ -567,9 +527,6 @@ def render_page(name, games, stats, manuals=None, guestbook=None,
     bar.append(TEAL + f"{stats.total} "
                + plural(stats.total, "player", "players") + " all time"
                + RESET)
-    if stats.won:
-        bar.append(CLAY + f"{stats.won} "
-                   + plural(stats.won, "win", "wins") + RESET)
     # Newest move anywhere on the host, with the game it happened in: counters
     # only ever grow, so they cannot answer "is anyone here right now?". The
     # piece is omitted until a slot exists, so a fresh host says nothing.
@@ -637,8 +594,6 @@ def render_page(name, games, stats, manuals=None, guestbook=None,
                      + plural(g.explorers, "explorer", "explorers") + RESET]
             if g.last_move:
                 parts.append(GREY + f"last move {ago(g.last_move)}" + RESET)
-            if g.won:
-                parts.append(CLAY + f"{g.won} finished" + RESET)
             lines.append("  " + " · ".join(parts))
         if manuals and stem in manuals:
             # micron link syntax: leading backtick enters format mode, then
@@ -712,8 +667,6 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None,
                    + plural(stats.turns, "move", "moves") + RESET)
     bar.append(TEAL + f"{stats.total:,} "
                + plural(stats.total, "player", "players") + RESET)
-    if stats.won:
-        bar.append(GREEN + f"{stats.won:,} finished" + RESET)
     recent = max(((g.last_move, stem) for stem, g in stats.per_game.items()
                   if g.last_move), default=None)
     if recent:
@@ -749,8 +702,6 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None,
                 # the one player stayed, and a row that restates its own numbers
                 # teaches the reader to skim past the piece that would matter
                 pieces.append(CLAY + f"{g.repeat} played more than once" + RESET)
-            if g.won:
-                pieces.append(GREEN + f"{g.won} finished" + RESET)
             pieces.append(GREY + "last played " + ago(g.last_move, now) + RESET)
             label = (names or {}).get(stem, stem)
             lines.append("  " + AMBER + label + RESET + "  "
@@ -849,11 +800,9 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None,
 @dataclasses.dataclass
 class GameStats:
     """One game's numbers, read off the save tree per page request.
-    explorers = players with a slot; won = players whose metadata says a run
-    ended; turns = moves fed for this game; last_move = newest slot mtime
-    (0.0 = never played)."""
+    explorers = players with a slot; turns = moves fed for this game; last_move =
+    newest slot mtime (0.0 = never played)."""
     explorers: int = 0
-    won: int = 0
     turns: int = 0
     last_move: float = 0.0
     # players who sent more than one move in this game. "24 moves · 24 players"
@@ -868,7 +817,6 @@ class PlayerStats:
     per_game: dict  # {game: GameStats}
     total: int      # all-time unique players, all games (one identity, N games = 1)
     turns: int = 0  # moves fed, all games
-    won: int = 0    # players who finished, all games
     # identities whose moves across ALL games add to more than one, counted per
     # identity so someone who poked two games once each is counted once — for
     # them, coming back to the node is the true thing that happened
@@ -880,7 +828,7 @@ def player_stats(saves_root):
     ARE the registry (spec §5): one file per (game, player), rewritten every
     turn, never deleted — so slot count = players who ever started a game and
     mtime = that player's last turn. Each slot's sibling <sender>.json adds
-    the move count and the win flag; a slot without one still proves its
+    the move count; a slot without one still proves its
     player fed at least one turn (the autosave follows a turn), so it counts
     as one move rather than zero. The turn total is the higher of that derived
     sum and the moves.json floor, so losing metadata cannot walk the odometer
@@ -894,7 +842,6 @@ def player_stats(saves_root):
         g.explorers += 1
         g.turns += slot_turns
         g.repeat += 1 if slot_turns > 1 else 0
-        g.won += 1 if m.get("won") else 0
         g.last_move = max(g.last_move, p.stat().st_mtime)
         identities.add(p.stem)
         fed[p.stem] = fed.get(p.stem, 0) + slot_turns
@@ -906,15 +853,13 @@ def player_stats(saves_root):
         # already prove, never at zero (that would restart the odometer)
         _write_moves(saves_root, derived)
         floor = derived
-    for game, seen in _read_wins(saves_root).items():
-        # a win the host witnessed stays counted even once the slot that
-        # proved it is pruned (the end-of-run state is unrecoverable)
-        if not isinstance(seen, list):
-            continue
-        g = per_game.setdefault(game, GameStats())
-        g.won = max(g.won, len({s for s in seen if isinstance(s, str)}))
+    # No win counter, deliberately. The Z-machine reports only that a run ended —
+    # the quit opcode, or a return from the top-level routine — and Infocom stories
+    # reach it for a victory, a death and a player giving up alike, with no signal
+    # left over to tell them apart (the score globals are an Inform convention, and
+    # most titles here are Infocom's own engine, where they hold something else).
+    # A number on this page has to mean one thing.
     return PlayerStats(per_game, len(identities), max(floor, derived),
-                       sum(g.won for g in per_game.values()),
                        sum(1 for n in fed.values() if n > 1))
 
 

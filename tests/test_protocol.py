@@ -276,24 +276,24 @@ class PlayerStatsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             a, b, c = "aa" * 16, "bb" * 16, "cc" * 16
-            self._slot(root, "zork1", a, meta={"turns": 40, "won": True})
+            self._slot(root, "zork1", a, meta={"turns": 40})
             self._slot(root, "zork1", b, age_min=30, meta={"turns": 2})
             self._slot(root, "zork1", c, age_min=90)  # no metadata at all
             self._slot(root, "planetfall", a, age_min=15,
-                       meta={"turns": 7, "won": True})
+                       meta={"turns": 7})
             st = player_stats(root)
             # st_mtime is nanosecond-rounded by the kernel, so the recency
             # timestamp gets a delta, never an ==  comparison
             z = st.per_game["zork1"]
             # c has no metadata: a slot is only written after a turn, so it
             # still proves one move rather than zero
-            self.assertEqual((z.explorers, z.won, z.turns), (3, 1, 43))
+            self.assertEqual((z.explorers, z.turns), (3, 43))
             self.assertAlmostEqual(z.last_move, self.NOW - 5 * 60, delta=1)
             pf = st.per_game["planetfall"]
-            self.assertEqual((pf.explorers, pf.won, pf.turns), (1, 1, 7))
+            self.assertEqual((pf.explorers, pf.turns), (1, 7))
             self.assertAlmostEqual(pf.last_move, self.NOW - 15 * 60, delta=1)
             self.assertEqual(st.total, 3)      # a dedupes across games
-            self.assertEqual((st.turns, st.won), (50, 2))
+            self.assertEqual(st.turns, 50)
 
     def test_unparseable_metadata_reads_as_absent(self):
         """A stray/truncated/hand-edited sidecar must never fail a render
@@ -306,7 +306,7 @@ class PlayerStatsTests(unittest.TestCase):
             self._slot(root, "zork1", "cc" * 16, meta=[1, 2])  # not an object
             st = player_stats(root)
             g = st.per_game["zork1"]
-            self.assertEqual((g.explorers, g.won, g.turns), (3, 0, 3))
+            self.assertEqual((g.explorers, g.turns), (3, 3))
 
     def test_repeat_players_are_counted_per_slot_and_per_identity(self):
         """Two counts, deliberately not the same number: a game's row counts slots
@@ -329,10 +329,8 @@ class PlayerStatsTests(unittest.TestCase):
     def test_pruning_is_reflected(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            p = self._slot(root, "zork1", "aa" * 16, meta={"turns": 9,
-                                                           "won": True})
-            self.assertEqual((player_stats(root).turns,
-                              player_stats(root).won), (9, 1))
+            p = self._slot(root, "zork1", "aa" * 16, meta={"turns": 9})
+            self.assertEqual(player_stats(root).turns, 9)
             p.unlink()   # operator prunes a player
             self.assertEqual((player_stats(root).per_game,
                               player_stats(root).turns), ({}, 9))
@@ -366,11 +364,9 @@ class PlayerStatsTests(unittest.TestCase):
         self.assertEqual("[Game over]", p.call("look"))
         meta = p.store.load_meta(p.game, S1)
         ledger = (p.store.root / "moves.json").read_text()
-        self.assertTrue(meta["won"])
         fresh = p.call("again")
         self.assertTrue(fresh.strip() and "Game over" not in fresh)
         kept = p.store.load_meta(p.game, S1)
-        self.assertTrue(kept["won"])
         self.assertGreaterEqual(kept["turns"], meta["turns"])
         # the verb itself is not a move the story was fed
         self.assertEqual((p.store.root / "moves.json").read_text(), ledger)
@@ -378,25 +374,10 @@ class PlayerStatsTests(unittest.TestCase):
         p.sessions.clear()                       # exactly what a host restart does
         self.assertNotIn("game over", p.call("look").lower())
 
-    def test_witnessed_win_survives_pruning(self):
-        p = P()
-        self.addCleanup(p.close)
-        for line in ("north", "open window", "east", "look"):
-            p.call(line)
-        p.call("quit")
-        p.call("y")
-        root = p.store.root
-        self.assertEqual(player_stats(root).won, 1)
-        for f in root.glob("*/*"):               # operator prunes that player
-            f.unlink()
-        self.assertEqual((player_stats(root).total, player_stats(root).won),
-                         (0, 1))
-
     def test_empty_or_missing_dir(self):
         with tempfile.TemporaryDirectory() as d:
             st = player_stats(Path(d) / "nope")
-            self.assertEqual((st.per_game, st.total, st.turns, st.won),
-                             ({}, 0, 0, 0))
+            self.assertEqual((st.per_game, st.total, st.turns), ({}, 0, 0))
 
     def test_ago_resolution(self):
         n = 1_000_000.0
@@ -408,21 +389,21 @@ class PlayerStatsTests(unittest.TestCase):
 
     def test_counters_survive_a_host_restart(self):
         """GameState lives in memory; the sidecar is the durable copy, so a
-        player's move count and win flag continue where they left off (the
-        test_3_reconnect pattern one level down)."""
+        player's move count continues where it left off (the test_3_reconnect
+        pattern one level down)."""
         p = P()
         try:
             p.call(text="look")          # first contact + 1 turn
             p.call(text="inventory")
             self.assertEqual(p.store.load_meta(p.game, S1),
-                             {"turns": 2, "won": False})
+                             {"turns": 2})
             p.sessions.clear()           # host restart
             p.call(text="")              # reconnect batch: not a turn
             self.assertEqual(p.store.load_meta(p.game, S1),
-                             {"turns": 2, "won": False})
+                             {"turns": 2})
             p.call(text="look")
             self.assertEqual(p.store.load_meta(p.game, S1),
-                             {"turns": 3, "won": False})
+                             {"turns": 3})
         finally:
             p.close()
 
@@ -436,10 +417,10 @@ class PlayerStatsTests(unittest.TestCase):
             p.call(text="quit")
             p.call(text="y")
             self.assertEqual(p.store.load_meta(p.game, S1),
-                             {"turns": 3, "won": True})
+                             {"turns": 3})
             self.assertEqual(p.call(text="look"), "[Game over]")
             self.assertEqual(p.store.load_meta(p.game, S1),
-                             {"turns": 3, "won": True})
+                             {"turns": 3})
         finally:
             p.close()
 
@@ -451,25 +432,24 @@ class PlayerStatsTests(unittest.TestCase):
             p.call(text="")                          # status line, no turn
             self.assertNotEqual(p.call(text="look"), "")
             self.assertEqual(p.store.load_meta(p.game, S1),
-                             {"turns": 1, "won": False})
+                             {"turns": 1})
         finally:
             p.close()
 
     def test_render_page_stats(self):
         page = render_page("J", [("zork1", "<ab:cd:ef>")],
-                           PlayerStats({"zork1": GameStats(3, 1, 42, 0.0)},
-                                       12, 42, 1))
-        self.assertIn("`B321`!`Ffb542 moves`f · `F4cb12 players all time`f · "
-                      "`Ff881 win`f", page)
+                           PlayerStats({"zork1": GameStats(3, 42, 0.0)}, 12, 42))
+        self.assertIn("`B321`!`Ffb542 moves`f · `F4cb12 players all time`f",
+                      page)
         self.assertIn("`Ffc9`!zork1`f`!\n  `F8cf`[<ab:cd:ef>`lxmf@abcdef]`b`f\n"
-                      "  `F8c53 explorers`f · `Ff881 finished`f", page)
+                      "  `F8c53 explorers`f", page)
 
     def test_render_page_zero_pieces_omitted(self):
         """The odometer never shows a 0 it has no reason to show, and a game
         nobody has started gets no stats line at all."""
         page = render_page("J", [("zork1", "<ab:cd:ef>"),
                                  ("yomama", "<be:ef:00>")],
-                           PlayerStats({}, 0, 0, 0))
+                           PlayerStats({}, 0, 0))
         self.assertIn("progress is saved per player automatically.\n"
                       "`B321`!`F4cb0 players all time`f", page)
         self.assertNotIn("moves", page)
@@ -481,8 +461,7 @@ class PlayerStatsTests(unittest.TestCase):
         Galaxy' for h2g2) while the stem stays the identity/save key. A
         multi-word title must still parse as exactly one game: the address
         line under the name is what disambiguates the anchor."""
-        stats = PlayerStats({"h2g2": GameStats(2, 0, 9, time.time() - 70)},
-                            1, 9, 0)
+        stats = PlayerStats({"h2g2": GameStats(2, 9, time.time() - 70)}, 1, 9)
         page = render_page("J", [("h2g2", "<ab:cd:ef>"), ("zork1", "<11:22:33>")],
                            stats, names={"h2g2": "Hitchhikers Guide to the Galaxy"})
         self.assertIn("`Ffc9`!Hitchhikers Guide to the Galaxy`f`!\n"
@@ -509,8 +488,8 @@ class Helpers(unittest.TestCase):
 
     def test_render_page(self):
         lm = time.time() - 630  # "10 min ago", robust to a second of drift
-        stats = PlayerStats({"zork1": GameStats(2, 1, 30, lm),
-                             "planetfall": GameStats(1, 0, 4, lm)}, 2, 34, 1)
+        stats = PlayerStats({"zork1": GameStats(2, 30, lm),
+                             "planetfall": GameStats(1, 4, lm)}, 2, 34)
         page = render_page("J-Machine Games",
                            [("zork1", "<ab:cd:ef>"),
                             ("planetfall", "<90:12:34>")], stats)
@@ -522,17 +501,15 @@ class Helpers(unittest.TestCase):
         self.assertFalse([l for l in page.split("\n") if l.startswith(">")])
         # the address line is itself the link: label <hex>, url lxmf@<hex>
         self.assertIn("`Ffc9`!zork1`f`!\n  `F8cf`[<ab:cd:ef>`lxmf@abcdef]`b`f\n"
-                      "  `F8c52 explorers`f · `F999last move 10 min ago`f · "
-                      "`Ff881 finished`f", page)
-        # a game nobody has finished omits that piece (the odometer never
-        # leads with a zero), and singular/plural stays honest
+                      "  `F8c52 explorers`f · `F999last move 10 min ago`f", page)
+        # a game with no recent play omits that piece (the odometer never leads
+        # with a zero), and singular/plural stays honest
         self.assertIn("`Ffc9`!planetfall`f`!\n  `F8cf`[<90:12:34>`lxmf@901234]`b`f\n"
                       "  `F8c51 explorer`f · `F999last move 10 min ago`f\n", page)
         # the odometer also names the newest move anywhere, in which game: the
         # counters alone cannot say whether anyone is here now
         self.assertIn("`B321`!`Ffb534 moves`f · `F4cb2 players all time`f · "
-                      "`Ff881 win`f · `F999last move 10 min ago`f in `Ffc9zork1`f",
-                      page)
+                      "`F999last move 10 min ago`f in `Ffc9zork1`f", page)
         # names are TEXT on the canvas: no `B block behind a name (a filled bar
         # behind 25 names reads as a stack of grey slabs) and no '> ' heading
         # (the parser paints its own #bbb band there)
@@ -552,8 +529,7 @@ class Helpers(unittest.TestCase):
                             manuals={"zork1": "ab:/file/zork1.pdf"},
                             guestbook="abcd:/page/guestbook.mu")
         self.assertIn("`Ffc9`!zork1`f`!\n  `F8cf`[<ab:cd:ef>`lxmf@abcdef]`b`f\n"
-                      "  `F8c52 explorers`f · `F999last move 10 min ago`f · "
-                      "`Ff881 finished`f\n"
+                      "  `F8c52 explorers`f · `F999last move 10 min ago`f\n"
                       "  `Fc9f`[manual`ab:/file/zork1.pdf]`b`f", paged)
         self.assertNotIn("`[manual`", paged.split("`!planetfall`f`!")[1])
         # guestbook link line, and it must not be readable as a game

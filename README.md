@@ -233,8 +233,23 @@ screen row, because on the main game list a wrapped entry really does read as tw
 games — but this page is read, not tapped, clients wrap it, and that trim cost the
 operator's own game its statistics purely because "Hitchhikers Guide to the Galaxy"
 is long. Pieces now say what they mean in as many words as it takes: `179 moves · 2
-players · 2 played more than once · 1 finished · last played 11 d ago`, including the
+players · 2 played more than once · last played 11 d ago`, including the
 `last played`, which a bare `11 d ago` left to be guessed.
+
+### Completion is not counted, and why
+
+The page used to print `N finished`. It could not mean that. The Z-machine reports only
+that a run *ended* — the `quit` opcode, or a return from the top-level routine — and
+Infocom stories reach that path for a victory, a death and a player giving up alike,
+with nothing left over to tell them apart. The score globals would be the usual
+heuristic, but they are an Inform convention and most titles here run on Infocom's own
+engine, where those words hold something else entirely. So the label promised a fact the
+engine cannot supply, and the machinery came out: the `won` flag in a slot's sidecar,
+`wins.json`, and the piece on both pages. Reaching the end of a story still behaves
+correctly — `[Game over]`, the dead-slot replay, and `again` all still work — it simply
+is not a statistic any more. If a genuine victory signal is ever wanted, the honest route
+is to keep the story's closing lines when a run ends and read the difference off the text,
+which is where that difference actually appears.
 
 ### Is it awake? (operator)
 

@@ -25,7 +25,6 @@ def stats(**games):
     return PlayerStats(per_game=per_game,
                        total=sum(g.explorers for g in per_game.values()),
                        turns=sum(g.turns for g in per_game.values()),
-                       won=sum(g.won for g in per_game.values()),
                        repeat=sum(g.repeat for g in per_game.values()))
 
 
@@ -193,12 +192,12 @@ class ActivityPage(unittest.TestCase):
         # statistics purely because "Hitchhikers Guide to the Galaxy" is long.
         title = "Hitchhikers Guide to the Galaxy"
         out = render_stats("J", stats(h2g2=GameStats(explorers=2, turns=179,
-                                                    won=1, last_move=1e12,
+                                                    last_move=1e12,
                                                     repeat=2)),
                            names={"h2g2": title}, now=1e12)
         plain = P._plain([ln for ln in out.splitlines() if title in ln][0])
         for piece in ("179 moves", "2 players", "2 played more than once",
-                      "1 finished", "last played"):
+                      "last played"):
             self.assertIn(piece, plain)
 
     def test_recency_says_what_it_is_a_recency_of(self):
