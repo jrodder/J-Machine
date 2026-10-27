@@ -117,6 +117,11 @@ def recent(days, count, now=None):
                             time.localtime(now - 86400 * back))
         t = totals(days, day)
         t["day"] = day
+        # A zero from a recorded quiet day and a zero because the log has never
+        # seen that day are different facts, and only one of them is a fact.
+        # The ledger itself only exists from the day it was introduced, so the
+        # days before it are not quiet — they are unknown.
+        t["recorded"] = day in days
         out.append(t)
     return out
 

@@ -76,6 +76,33 @@ class ActivityPage(unittest.TestCase):
         self.assertIn("2 players", out)
         self.assertIn("0 moves", out)
 
+    def test_an_unrecorded_day_does_not_claim_nobody_played(self):
+        # The ledger only exists from the day it was introduced, so the week
+        # before it is unknown, not quiet. Printing "0 moves" there is a lie
+        # about the busiest days the node ever had.
+        now = 1793036879.0
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        out = P._plain(render_stats("J", stats(), now=now,
+                                    days={today: {"h2g2": bucket(turns=3)}}))
+        week_ago = P._day_label(time.strftime(
+            "%Y-%m-%d", time.localtime(now - 6 * 86400)))
+        self.assertIn(week_ago + "  no record", out)
+        self.assertEqual(out.count("0 moves"), 0)
+        self.assertIn("3 moves", out)
+
+    def test_a_recorded_quiet_day_still_says_zero_moves(self):
+        # "no record" is for days the log never saw; a quiet day it saw is a fact.
+        now = 1793036879.0
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        yest = time.strftime("%Y-%m-%d", time.localtime(now - 86400))
+        out = P._plain(render_stats("J", stats(), now=now,
+                                    days={today: {}, yest: {}}))
+        rows = {ln.strip().split("  ")[0]: ln for ln in out.splitlines()
+                if "moves" in ln or "no record" in ln}
+        self.assertIn("0 moves", rows[P._day_label(today)])
+        self.assertIn("0 moves", rows[P._day_label(yest)])
+        self.assertNotIn("no record", rows[P._day_label(today)])
+
     def test_the_day_log_is_preferred_over_the_ledger_window(self):
         # Both describe recent days; the durable one is the truth about them, and
         # it never shrinks when the ledger rotates.
@@ -181,13 +208,17 @@ class ActivityPage(unittest.TestCase):
         # evidence about one message. The fact wins.
         out = P.service_status(["story file missing: zork3"],
                                verified_at=1e12, now=1e12)
-        self.assertIn("[ DOWN ]", out)
+        self.assertIn(P.ORB_DOWN["body"], out)
+        self.assertNotIn(P.ORB_OK["body"], out)
         self.assertIn("story file missing: zork3", out)
-        self.assertNotIn("OK", out)
+        # the colour is the state; spelling it out would be a second source of
+        # truth for one fact, and a word is what a reader anchors on anyway
+        self.assertNotIn("DOWN", out)
 
     def test_a_verified_round_trip_is_green_and_says_when(self):
         out = P.service_status([], verified_at=1e12 - 7200, now=1e12)
-        self.assertIn("[ OK ]", out)
+        self.assertIn(P.ORB_OK["body"], out)
+        self.assertNotIn("OK", out)
         self.assertIn("verified 2 h ago", out)
 
     def test_an_unchecked_node_is_not_called_healthy(self):
@@ -195,23 +226,34 @@ class ActivityPage(unittest.TestCase):
         # which is how a monitoring page starts lying: nothing is wrong and
         # nobody has looked.
         out = P.service_status([], verified_at=None, now=1e12)
-        self.assertIn("UNCHECKED", out)
-        self.assertNotIn(" OK ", out)
-        self.assertNotIn("DOWN", out)
+        self.assertIn(P.ORB_UNCHECKED["body"], out)
+        self.assertNotIn(P.ORB_OK["body"], out)
+        self.assertNotIn(P.ORB_DOWN["body"], out)
+        self.assertNotIn("UNCHECKED", out)
+        # nothing to say beside it: age is not a thing an unchecked node has
+        self.assertEqual(len(out.splitlines()), 3)
 
     def test_age_is_printed_and_never_coloured_as_a_fault(self):
         # Staleness is information, not a threshold to exceed: a check from a
         # week ago is still a check that succeeded.
         out = P.service_status([], verified_at=1e12 - 86400 * 7, now=1e12)
-        self.assertIn("OK", out)
+        self.assertIn(P.ORB_OK["body"], out)
         self.assertIn("verified 7 d ago", out)
 
-    def test_the_status_line_is_the_last_line(self):
+    def test_the_orb_is_the_same_shape_whichever_way_it_points(self):
+        for faults, verified in ((["bad"], None), ([], 1e12), ([], None)):
+            plain = P._plain(P.service_status(faults, verified, 1e12))
+            rows = [r for r in plain.splitlines() if r]
+            self.assertEqual(rows[0], P.ORB_TOP, faults or verified)
+            self.assertEqual(rows[-1], P.ORB_BOT, faults or verified)
+
+    def test_the_status_button_is_the_last_thing_on_the_page(self):
         out = render_stats("J", stats(),
                            service={"faults": [], "verified_at": 1e12},
                            back="a" * 32 + ":/page/index.mu", now=1e12)
         plain = [P._plain(l) for l in out.splitlines() if P._plain(l) != "-"]
-        self.assertIn("[ OK ]", plain[-1])
+        self.assertEqual(plain[-1], P.ORB_BOT)
+        self.assertIn(P.ORB_TOP, plain)
 
     def test_the_status_line_carries_no_identity(self):
         out = render_stats("J", stats(),

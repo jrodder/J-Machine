@@ -108,6 +108,13 @@ class Window(unittest.TestCase):
                          ["2026-10-25", "2026-10-26", "2026-10-27"])
         self.assertEqual([r["turns"] for r in rows], [0, 5, 0])
 
+    def test_an_unseen_day_is_not_reported_as_a_recorded_zero(self):
+        # Both come back as 0 turns; only one of them is a fact about the day.
+        now = time.mktime(time.strptime("2026-10-27 12:00", "%Y-%m-%d %H:%M"))
+        rows = recent({"2026-10-26": {"h2g2": bucket(turns=5)}}, count=3,
+                      now=now)
+        self.assertEqual([r["recorded"] for r in rows], [False, True, False])
+
     def test_newest_names_the_last_recorded_day(self):
         self.assertIsNone(newest({}))
         self.assertEqual(newest({"2026-10-26": {}, "2026-10-27": {}}),

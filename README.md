@@ -200,9 +200,12 @@ the whole file).
 Sections: server totals, per game (played games only, most recent first, with
 the newest player's own move count — a game's total hides a long solo run),
 recent days, and replies. Recent days reads the permanent day log when there is
-one, so it shows seven days including the quiet ones and says how far back the log
-goes; only on a host that has not written one yet does it fall back to the ledger
-window, where it labels itself as the window it is. A day log that has stopped
+one, so it shows seven days and says how far back the log goes. A day the log saw and
+recorded as empty prints `0 moves`; a day from before the log existed prints
+`no record`, because the ledger itself only remembers from the day it was introduced
+and printing those as zeros would report the busiest stretch of the node's life as
+nobody playing. Only on a host that has not written a day log yet does the section
+fall back to the ledger window, where it labels itself as the window it is. A day log that has stopped
 recording today is a fault, and turns the status button red — every player-facing
 number looks normal while that is happening, which is why it is checked. Two rules hold it honest. A section with nothing to say
 is omitted rather than rendered as a zero, because a number that appears, vanishes
@@ -270,21 +273,23 @@ its own schedule, which can be immediate or can be several minutes of listening,
 check that gives up sooner cannot tell "not yet" from "never". The first version
 allowed 480 seconds and filed a failure that was really just a short window.
 
-So `[ DOWN ]` means the last check did not complete, and its detail line says what
-was missing — no route, no answer, or an answer that says the node itself is
+So a **red orb** means the last check did not complete, and the text beside it says
+what was missing — no route, no answer, or an answer that says the node itself is
 short-circuiting something. Read that line before concluding the machine is down.
 
-The activity page ends with one button — last line, below the back link, because
-it is a strip about the node rather than what a player came to read. Its colour
-means exactly one thing:
+The activity page ends with one button — last, below the back link, because it is a
+strip about the node rather than what a player came to read. It is a small orb drawn
+with block glyphs and painted by hand, three lines tall, light from the upper left.
+The colour is the whole message and nothing spells it out; there is one hue per state:
 
-- `[ OK ]` — the last check got through. A client outside the process put an LXMF
+- **green** — the last check got through. A client outside the process put an LXMF
   query to a game address and the engine answered.
-- `[ UNCHECKED ]` — nothing is known to be wrong and nobody has asked. Not a
-  fault, and not a green light either.
-- `[ DOWN ]` — a fault: a story file missing, the save store unwritable, a turn
-  with no outcome, no interface online, page render failures, or a probe that
-  failed since the last good round trip.
+- **amber** — nothing is known to be wrong and nobody has asked. Not a fault, and not
+  a green light either. It stands alone with no text, because age is not a thing an
+  unchecked node has.
+- **red** — a fault: a story file missing, the save store unwritable, a turn with no
+  outcome, no interface online, page render failures, a day log that stopped
+  recording, or a probe that failed since the last good round trip.
 
 Two rules keep it honest. A fault outranks a recent success, because a vanished
 story file is a fact while one good round trip is evidence about one message. And

@@ -468,9 +468,26 @@ MAPPER_LINK = (VIOLET + "`[Droid-Mapper (Android map helper)`"
 PING = "ping"
 PING_ACK = "ping-ack"
 
-PILL_OK = "`B131`Faf8`!"           # pale green on green
-PILL_DOWN = "`B300`Ffa8`!"         # pale red on red
-PILL_UNVERIFIED = "`B330`Ffd9`!"   # warm yellow on amber
+# The button, drawn rather than spelled. Green, red and amber are the whole
+# message; a word under the colour would only repeat it, and on a page read at
+# arm's length on a bus the colour is what lands. The interior is painted with
+# block glyphs — no background band, so the colour is the orb and not a
+# rectangle around it. Light from the upper left: a pale sheen at the top, the
+# body darkening to the bottom rim.
+ORB_TOP, ORB_MID, ORB_BOT = "▗▄▄▄▖", "█░▒▓█", "▝▀▀▀▘"
+
+ORB_OK = dict(rim="`F161", arc="`F282", body="`F3a3", sheen="`Fbfb")
+ORB_DOWN = dict(rim="`F511", arc="`F822", body="`Fa33", sheen="`Ffbb")
+ORB_UNCHECKED = dict(rim="`F541", arc="`F862", body="`Fb83", sheen="`Ffed")
+
+
+def orb(pal):
+    """The three lines of the orb, painted in one palette."""
+    return (
+        pal["rim"] + "▗" + pal["arc"] + "▄▄▄" + pal["rim"] + "▖" + RESET,
+        pal["body"] + "█" + pal["sheen"] + "░▒" + pal["body"] + "▓█" + RESET,
+        pal["rim"] + "▝" + pal["arc"] + "▀▀▀" + pal["rim"] + "▘" + RESET,
+    )
 
 
 def ping_reply(boot, games):
@@ -480,32 +497,34 @@ def ping_reply(boot, games):
 
 
 def service_status(faults=(), verified_at=None, now=None):
-    """The status button: [ OK ] / [ DOWN ] / [ UNCHECKED ], with the reason or
-    the age of the last verification beside it.
+    """The status button: a painted orb, red over green over amber, and no word.
 
-    A fault outranks a fresh green on purpose: a story file that vanished is a
-    fact about the node, while a successful round trip is one piece of evidence
-    about one message. Age is printed, never coloured — how long since anyone
-    checked is information, not a threshold to exceed."""
+    A page rendered by the host proves the host is awake; it proves nothing about
+    a reply reaching a player, which is the direction that breaks silently. So
+    green is not self-reported: it requires a client outside this process to have
+    asked for a turn-shaped round trip and reported back that the answer arrived
+    (ping-ack). Amber means nobody knows either way, and is deliberately neither
+    green nor red — a two-colour indicator would have to call an unchecked node
+    healthy, which is how a monitoring page starts lying.
+
+    The colour carries the state, so nothing spells it out. Only two things are
+    written beside it: what is actually wrong, when something is; and how long
+    ago the evidence is, when there is evidence. An amber orb stands alone,
+    because age is not a thing it has.
+    """
     faults = [f for f in (faults or ()) if f]
     if faults:
-        pill, word = PILL_DOWN, "DOWN"
-    elif verified_at is not None:
-        pill, word = PILL_OK, "OK"
-    else:
-        pill, word = PILL_UNVERIFIED, "UNCHECKED"
-    # bracketed and colour-banded, so it reads as a control rather than as a
-    # sentence that happens to be coloured
-    line = pill + "[ " + word + " ]" + CLOSE_BAR
-    if faults:
+        lines = list(orb(ORB_DOWN))
         detail = CLAY + "; ".join(faults[:2]) + RESET
         if len(faults) > 2:
             detail += CLAY + f" (+{len(faults) - 2} more)" + RESET
     elif verified_at is not None:
+        lines = list(orb(ORB_OK))
         detail = GREY + "verified " + ago(verified_at, now) + RESET
     else:
-        detail = GREY + "no external check reported yet" + RESET
-    return line + "  " + detail
+        return "\n".join(orb(ORB_UNCHECKED))
+    lines[1] = lines[1] + "  " + detail
+    return "\n".join(lines)
 
 
 def render_page(name, games, stats, manuals=None, guestbook=None,
@@ -769,6 +788,10 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None,
         if label:
             lines.append("  " + GREY + label + RESET)
         for d in day_rows:
+            if d.get("recorded") is False:
+                lines.append("  " + GREY + _day_label(d["day"])
+                             + "  no record" + RESET)
+                continue
             n = d["turns"]
             row = ("  " + AMBER + _day_label(d["day"]) + RESET + "  "
                    + GOLD + f"{n} " + plural(n, "move", "moves") + RESET)

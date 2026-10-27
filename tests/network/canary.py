@@ -398,19 +398,26 @@ def probe(work, done):
             stats = fetch_page(dests["page"], work / "client2", port,
                                path="/page/stats.mu")
             check_stats(stats, dests["page"])
-        # The pill reads NOT VERIFIED until someone checks, and turns OK after a
-        # probe in another process attests that the answer arrived. That is the
+        # The orb is amber until someone checks, and green after a probe in
+        # another process attests that the answer arrived. The state is a colour,
+        # so the assertions are on the hue rather than on a word. That is the
         # whole service-status claim, observed over the wire rather than asserted
         # about a rendered string.
-        if "[ UNCHECKED ]" not in stats:
+        from jhost.protocol import ORB_DOWN, ORB_OK, ORB_UNCHECKED
+        if ORB_UNCHECKED["body"] not in stats:
+            raise RuntimeError("stats page did not start out unverified")
+        if ORB_OK["body"] in stats or ORB_DOWN["body"] in stats:
             raise RuntimeError("stats page did not start out unverified")
         with stage("ping", done):
             ping_roundtrip(games[GAME], work / "probe", port)
             verified = fetch_page(dests["page"], work / "client4", port,
                                   path="/page/stats.mu")
-            if "OK" not in verified:
+            if ORB_OK["body"] not in verified:
                 raise RuntimeError("stats page still not green after an "
                                    "attested round trip")
+            if ORB_UNCHECKED["body"] in verified:
+                raise RuntimeError("stats page still amber after an attested "
+                                   "round trip")
         # fetch, not browse: a file response, and the default output path
         with stage("fetch", done):
             blob = fetch_default_out(dests["page"], work / "client3", port,
