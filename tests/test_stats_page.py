@@ -151,9 +151,27 @@ class ActivityPage(unittest.TestCase):
                        until=1793041392.0)
         out = render_stats("J", stats(), activity=act)
         self.assertIn("2 replies delivered", out)
-        self.assertIn("1 unanswered", out)
         self.assertIn("1 in flight", out)
         self.assertIn("since", out)
+
+    def test_the_page_does_not_count_lost_replies(self):
+        # One lost turn writes a `failed` line and usually a second `dropped`
+        # line for the same reply, so a page total over them is two for one turn
+        # — and it is a different unit from the day rows, which count turns.
+        # The page counts what landed; what did not gets named and dated off the
+        # ledger by scripts/ledger_triage.py.
+        now = 1793036879.0
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        lost = bucket(turns=4, players=1, delivered=1, failed=3)
+        out = P._plain(render_stats(
+            "J", stats(), now=now, days={today: {"h2g2": lost}},
+            activity=Activity(per_day={today: {"h2g2": lost}},
+                              outcomes={"delivered": 1, "failed": 1,
+                                        "dropped": 1, "abandoned": 1},
+                              since=now, until=now)))
+        self.assertNotIn("unanswered", out)
+        self.assertIn("1 reply delivered", out)
+        self.assertIn("4 moves", out)
 
     def test_a_rotated_ledger_says_its_window_is_partial(self):
         act = Activity(per_day={"2026-10-26": {"h2g2": bucket(1)}},

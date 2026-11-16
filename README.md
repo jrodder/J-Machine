@@ -225,6 +225,16 @@ label (`since 26 Oct 13:55`) because the ledger is size-rotated — an unlabelle
 count would read as all-time and then quietly shrink, `jhost/window.py` reports
 how far back it actually reached and whether the byte cap left records unread.
 
+The Replies line counts the replies that landed, and the day rows print nothing
+about the ones that did not. That is a cut, not an omission: a lost turn writes a
+`failed` line and then usually a second `dropped` line for the same reply — the
+link failing, then the propagation fallback failing — so any total over those
+names counts two lines for one lost turn, in units of ledger lines while the day
+rows count turns. Two figures for the same fact on one page, never reconcilable.
+What was lost and why comes off the ledger itself: `scripts/ledger_triage.py`
+prints one block per lost turn with the `why` the host recorded and LXMF's
+attempt count, and `data/health.json` carries a counter per state.
+
 Nothing on the page names a player. The save tree could attribute every number to
 a destination hash, and a hash is a persistent handle on a person, so the page
 carries aggregates only (pinned by a test that fails if a 32-hex string appears).

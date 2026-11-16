@@ -752,10 +752,6 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None,
                 (d.get("games") or {}).items(), key=lambda kv: (-kv[1], kv[0]))[:3])
             if detail:
                 parts.append(GREY + detail + RESET)
-            if d.get("failed"):
-                parts.append(CLAY + f"{d['failed']} "
-                             + plural(d["failed"], "unanswered", "unanswered")
-                             + RESET)
             if parts:
                 row += "  " + " · ".join(parts)
             lines.append(row)
@@ -765,12 +761,16 @@ def render_stats(name, stats, activity=None, back=None, names=None, now=None,
         # an unlabelled count would read as all-time and quietly shrink.
         o = activity.outcomes
         answered = o.get("delivered", 0) + o.get("propagated", 0)
-        unanswered = (o.get("failed", 0) + o.get("dropped", 0)
-                      + o.get("abandoned", 0))
+        # What landed, and nothing about what did not. A lost turn writes a
+        # `failed` line and then usually a `dropped` line for the same reply, so
+        # any count of these on the page is a count of ledger lines over a
+        # smaller number of turns — and it can never be reconciled with the day
+        # rows above, which count turns. A lost reply gets named, dated and
+        # given its `why` by scripts/ledger_triage.py, which reads the ledger
+        # directly; this page is not where a fault gets diagnosed.
         rows = [GREEN + f"{answered} "
                 + plural(answered, "reply delivered", "replies delivered")
-                + RESET,
-                CLAY + f"{unanswered} unanswered" + RESET]
+                + RESET]
         if activity.in_flight:
             rows.append(GREY + f"{activity.in_flight} in flight" + RESET)
         lines.append(DIV)
