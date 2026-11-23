@@ -201,6 +201,47 @@ class WhatReachedAPlayer(unittest.TestCase):
         self.host._cpu_pct = lambda: 33.3
         self.assertEqual(self.host.readiness()["cpu_pct"], 33.3)
 
+    def test_a_uplink_lost_is_named_not_tolerated(self):
+        # the old rule asked whether *no* uplink was up, so a host running on 8
+        # of 10 -- two torn down after "unrecoverable error", which RNS cannot
+        # reopen without a new process -- stayed green while flapping
+        self.host.started = time.time() - 3600
+        h = self.host.readiness()
+        h["interfaces_total"] = 10
+        h["interfaces_online"] = 8
+        self.assertIn("2 of 10", " ".join(self.host._faults(h)))
+
+    def test_all_uplinks_down_is_still_named(self):
+        self.host.started = time.time() - 3600
+        h = self.host.readiness()
+        h["interfaces_total"] = 10
+        h["interfaces_online"] = 0
+        self.assertIn("no interface online", " ".join(self.host._faults(h)))
+
+    def test_a_host_still_bringing_uplinks_up_is_not_faulted(self):
+        # interfaces connect at their own pace after a start; red for the first
+        # few minutes of every boot would train everyone to ignore the pill
+        self.host.started = time.time() - 60
+        h = self.host.readiness()
+        h["interfaces_total"] = 10
+        h["interfaces_online"] = 8
+        self.assertNotIn("uplinks down", " ".join(self.host._faults(h)))
+
+    def test_repeated_uplink_churn_is_named(self):
+        # 1,899 reconnects in 83 minutes on the live host, against a historical
+        # 17 a day: the journal line that would have shown it was suppressed by
+        # design, so the count has to reach the verdict or it is unseen
+        self.host.started = time.time() - 3600
+        h = self.host.readiness()
+        h["log_suppressed"] = {"socket_closed": 900, "reconnected": 900}
+        self.assertIn("uplink churn", " ".join(self.host._faults(h)))
+
+    def test_normal_hub_blips_are_not_churn(self):
+        self.host.started = time.time() - 3600
+        h = self.host.readiness()
+        h["log_suppressed"] = {"socket_closed": 3, "reconnected": 3}
+        self.assertNotIn("uplink churn", " ".join(self.host._faults(h)))
+
     def test_the_cpu_number_is_this_process_and_this_window(self):
         self.host.CPU_MIN_SPAN = 0
         self.assertIsNone(self.host._cpu_pct())   # no window has closed yet

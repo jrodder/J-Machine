@@ -76,6 +76,8 @@ ROLLUP_INTERVAL = 900        # day log fold: cheap, and keeps today at most
 # player's cost mid-evening costs one lookup, never a turn.
 STAMP_MAX_AGE = 15 * 60      # bounds the table: stamp rate x window
 STAMP_FLUSH_INTERVAL = RUN_TICK
+UPLINK_GRACE = 5 * 60     # interfaces connect at their own pace after a start
+CHURN_PER_HOUR = 300.0    # ~17 reconnects/day was the historical baseline
 
 # Sustained use of the box's core that counts as a fault. Not tidiness: the
 # failure of 2026-11-23 was this process's own LXMF routers starving its own
@@ -580,6 +582,14 @@ class Host:
         snapshot health.json carries, so the page and the file never hold two
         opinions about what is wrong."""
         h = self.readiness()
+        return {"faults": self._faults(h),
+                "verified_at": self._verified_at(h)}
+
+    def _faults(self, h):
+        """The verdict on a readiness snapshot, split out from _service so the
+        rules can be pointed at a captured set of numbers as well as at a live
+        host -- the arithmetic that stayed silent through a six-day outage is
+        worth being able to run against the numbers from that outage."""
         faults = []
         if h["games_missing_story"]:
             faults.append("story file missing: "
@@ -588,8 +598,32 @@ class Host:
             faults.append("save store is not writable")
         if h["ledger_unresolved"]:
             faults.append(f"{h['ledger_unresolved']} turns with no outcome")
+        # Both rules below are about a process that has been running long enough
+        # for its uplinks to have connected, and a host that has not entered
+        # run() yet has no uptime to judge, so it counts as just started.
+        since = max(time.time() - (self.started or time.time()), 1.0)
         if h["interfaces_total"] and not h["interfaces_online"]:
             faults.append("no interface online")
+        elif (h["interfaces_total"] > h["interfaces_online"]
+                and since > UPLINK_GRACE):
+            # "Is any uplink up" was the only question asked, so a node running
+            # on 8 of 10 looked fine (2026-11-23): two hubs were resetting us
+            # every few seconds and both had hit "experienced an unrecoverable
+            # error and is being torn down. Restart Reticulum to attempt to open
+            # this interface again". RNS cannot reopen one, so a lost uplink
+            # stays lost until this process restarts, and nothing else in a
+            # snapshot moves while a node gets deader by one hub at a time.
+            faults.append(f"{h['interfaces_total'] - h['interfaces_online']} "
+                          f"of {h['interfaces_total']} uplinks down "
+                          "(RNS cannot reopen one; needs a restart)")
+        # Those resets are suppressed from the journal by design (jhost/logs.py)
+        # so health.json's counters are the only place the churn exists, and no
+        # rule read them: ~1,900 reconnects in 83 minutes, against a historical
+        # 17 a day, was invisible to a green light.
+        churn = sum((h.get("log_suppressed") or {}).values())
+        if since > UPLINK_GRACE and churn / since * 3600.0 > CHURN_PER_HOUR:
+            faults.append(f"uplink churn: {int(churn / since * 3600.0)} "
+                          "reconnects/errors per hour since start")
         errs = h["page_errors"] + h["stats_errors"]
         if errs:
             faults.append(f"{errs} page render failure{'s' if errs > 1 else ''}")
@@ -616,6 +650,18 @@ class Host:
                 and (h.get("probe_t") or 0) > (h.get("last_roundtrip_ok") or 0)):
             faults.append("external check failed: "
                           + (h.get("probe_detail") or "no detail recorded"))
+        # the day log advancing is a condition, not a rate: today has begun, so
+        # today should be in the file. If it is not, the recorder is broken and
+        # history is being lost right now — worth a red button even though every
+        # player-facing number still looks fine.
+        if h.get("rollup_error"):
+            faults.append("day log not updating: " + h["rollup_error"])
+        elif h.get("rollup_days") and newest_day(self.days) != time.strftime(
+                "%Y-%m-%d", time.localtime()):
+            faults.append("day log has not recorded today")
+        return faults
+
+    def _verified_at(self, h):
         # Green is "the check ran and the engine answered", which is exactly
         # what a successful probe record says: a client outside this process put
         # an LXMF query to a game address and received the reply. That single
@@ -628,16 +674,7 @@ class Host:
         evidence = [t for t in (h.get("probe_t")
                                 if h.get("probe_ok") else None,
                                 h.get("last_roundtrip_ok")) if t]
-        # the day log advancing is a condition, not a rate: today has begun, so
-        # today should be in the file. If it is not, the recorder is broken and
-        # history is being lost right now — worth a red button even though every
-        # player-facing number still looks fine.
-        if h.get("rollup_error"):
-            faults.append("day log not updating: " + h["rollup_error"])
-        elif h.get("rollup_days") and newest_day(self.days) != time.strftime(
-                "%Y-%m-%d", time.localtime()):
-            faults.append("day log has not recorded today")
-        return {"faults": faults, "verified_at": max(evidence) if evidence else None}
+        return max(evidence) if evidence else None
 
     def _serve(self, stem, sender, short, msg, seq):
         if not msg.signature_validated and \
