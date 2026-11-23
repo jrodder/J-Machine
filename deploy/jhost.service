@@ -1,0 +1,50 @@
+[Unit]
+Description=J-Machine Reticulum game host
+After=network-online.target
+Wants=network-online.target
+# Bounded on purpose. Every start announces the page and every game, and RNS
+# blocks a destination from rebroadcast for about an hour when it announces
+# faster than ~1/hour -- an unbounded restart loop therefore makes the node
+# unreachable, which looks exactly like the failure it is chasing.
+StartLimitIntervalSec=3600
+StartLimitBurst=6
+
+[Service]
+Type=simple
+User=jrod
+WorkingDirectory=/home/jrod/J-Machine
+# --propagation-node: a reply a player's link cannot receive is stored at this
+# node instead of destroyed. Without it the ledger records failed + dropped and
+# the reply text is gone (host.py:632-633). It reaches the player only if their
+# client polls this node or a node peered with it. Chosen 2026-11-04 from the
+# 381 propagation nodes this host had seen announce within the previous 6 hours
+# -- enabled, default stamp costs [16,3,18] so it neither rejects our mail nor
+# asks us for extra computation, and generous transfer/sync limits. It is a
+# community node, not ours: swap the hash and restart if a player says they
+# poll a different one. The 5-minute poll (--propagation-pull default) makes an
+# unreachable node obvious in the journal within minutes of this restart.
+ExecStart=/home/jrod/J-Machine/.venv/bin/python -u -m jhost games/ --data-dir data/ --propagation-node f998c33992fc57136017453ff30964c8
+# always, not on-failure: on-failure leaves the service down forever after a
+# clean exit (a SystemExit, an interpreter that returns 0). The failure this
+# protects against is the quiet kind -- a torn-down RNS interface cannot be
+# reopened without a new process ("Restart Reticulum to attempt to open this
+# interface again", RNS TCPInterface.py:437), and the process stays "active"
+# the whole time it is deaf.
+Restart=always
+RestartSec=30
+
+# A bounded lifetime, not a tidy habit. Every fault that took this host down on
+# 2026-11-23 grew with uptime and could only be cleared by a new process: the
+# stamp-table storm (fixed in jhost.host.HostRouter, which is why this is now
+# insurance rather than the cure), ~29 RNS Link watchdog threads sitting on
+# conversations that ended days earlier, and an RNS storage tree swollen to
+# 33,516 files / 156 MB with its cache-clean job unable to finish 241 times a
+# day. Nothing else in the snapshot moved while all of that accumulated: it
+# reported 10/10 interfaces online and probe_ok true while every player reply
+# failed. Six hours restarts well inside the announce rate limit (32
+# destinations, 4 times a day, against ~1/hour per destination) and costs only
+# in-memory sessions -- progress lives in the autosave slots.
+RuntimeMaxSec=6h
+
+[Install]
+WantedBy=multi-user.target

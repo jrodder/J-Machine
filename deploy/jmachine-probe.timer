@@ -1,0 +1,21 @@
+[Unit]
+Description=Ask the J-Machine host for a round trip, from off its own machine
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+RandomizedDelaySec=15min
+Persistent=true
+AccuracySec=5min
+# Hourly for the mesh's reason, not habit: every run announces this checker's
+# own delivery destination, because the host can only route a reply to a
+# destination it can recall, and hubs refuse to rebroadcast a destination
+# announced faster than about once an hour. A faster timer mostly sends
+# announcements that get dropped.
+#
+# What the cadence costs is detection latency, not resolution. Four days of
+# silence is what an hourly check missed on the server; it missed it because
+# the check asked the wrong question, not because it asked it too rarely.
+
+[Install]
+WantedBy=timers.target

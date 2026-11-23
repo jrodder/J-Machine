@@ -56,6 +56,36 @@ HEALTH_INTERVAL = 60         # data/health.json rewrite cadence
 ROLLUP_INTERVAL = 900        # day log fold: cheap, and keeps today at most
                              # 15 min behind the ledger
 
+# lxmf 1.1.1 starts a fresh thread for every outbound stamp cost it learns and
+# rewrites the router's ENTIRE stamp table inside that thread
+# (LXMRouter.py:1027-1032), and the table is pruned only from __init__
+# (LXMRouter.py:276) -- never while running. On the deployed host (one CPU
+# core, one router per game, 31 games) that is a runaway which grows with
+# uptime: measured 1.75 thread spawns per second, 99.4% of the core with no
+# players online, 812 KB per game's table, and delivered == 0 for six straight
+# days because Reticulum's link-establishment deadlines were never met. A
+# restart took it to 14.9% and the tables grew back at ~78 KB/hour each.
+# This host answers a handful of players, so it needs a handful of stamp
+# costs, not one for every destination on the testnet: writes are batched to
+# the run() tick, and the table is bounded by age during the run.
+# ponytail: a shim over an upstream defect -- delete HostRouter and this pair
+# of constants if a release fixes LXMRouter.py:1027 and prunes while running.
+# A pruned entry is a hint, not a credential: a stamp cost is re-read from the
+# destination's own announce on the next reply (LXMRouter.py:397, 1754), and
+# this host registers its own destinations at stamp_cost=0, so evicting a
+# player's cost mid-evening costs one lookup, never a turn.
+STAMP_MAX_AGE = 15 * 60      # bounds the table: stamp rate x window
+STAMP_FLUSH_INTERVAL = RUN_TICK
+
+# Sustained use of the box's core that counts as a fault. Not tidiness: the
+# failure of 2026-11-23 was this process's own LXMF routers starving its own
+# Reticulum of a one-core host, so no amount of CPUQuota or Nice= separates
+# the thief from the victim -- they share an address space. The number has to
+# be looked at from inside the process, because nothing else in the snapshot
+# moves: it reported 10/10 interfaces online and probe_ok true while every
+# player reply failed.
+CPU_SATURATED = 80.0
+
 # The outcome names are the ledger states verbatim, so a counter and a ledger
 # line can never disagree about what happened to a message.
 OUTCOMES = ("abandoned", "handed_off", "delivered", "propagated", "failed",
@@ -78,7 +108,56 @@ def fresh_stats():
     return stats
 
 
+class HostRouter(LXMRouter):
+    """An LXMRouter that defers its stamp-table write (see STAMP_MAX_AGE).
+
+    Only update_stamp_cost is overridden, and it does what the parent's first
+    line does: record the cost. The parent's next two lines start a thread per
+    cost to rewrite the whole table; the write happens instead on the run()
+    tick, once per router per tick, from Host._flush_stamp_tables.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stamps_dirty = False
+
+    def update_stamp_cost(self, destination_hash, stamp_cost):
+        self.outbound_stamp_costs[destination_hash] = [time.time(), stamp_cost]
+        self.stamps_dirty = True
+
+
+def flush_stamp_table(router, max_age=STAMP_MAX_AGE):
+    """Drop stamp costs older than max_age, then write the table once -- and
+    only if it changed since the last flush. Returns whether it was written.
+
+    Ages rather than counts bound the table: the mesh decides how many new
+    stamp costs arrive per second, and a count cap would evict live peers
+    during a busy hour.
+
+    ponytail: the prune iterates a dict the library mutates from its own
+    threads without a lock (its own clean_outbound_stamp_costs does the same),
+    so a dictionary-changed-size RuntimeError is possible under a stamp flood.
+    Host._flush_stamp_tables catches it and skips that router for one tick --
+    the exposure is the library's, and closing it here would mean a lock the
+    parent never takes.
+    """
+    now = time.time()
+    table = router.outbound_stamp_costs
+    stale = [dest for dest, entry in table.items() if now - entry[0] > max_age]
+    for dest in stale:
+        del table[dest]
+    if not stale and not getattr(router, "stamps_dirty", False):
+        return False
+    router.stamps_dirty = False
+    router.save_outbound_stamp_costs()
+    return True
+
+
 class Host:
+    # /proc/self/stat over a shorter span than this is page-render noise, not
+    # a measurement; the value from the last real window is kept instead
+    CPU_MIN_SPAN = 10
+
     def __init__(self, data_dir, games_dir, name="🕹️ J-Machine Games 🕹️",
                  seed=None, port=4242, announce_interval=None,
                  propagation_node=None, propagation_pull=None):
@@ -105,7 +184,9 @@ class Host:
         self.sessions = {}            # {(game, sender): GameState}
         self.store = FileSaveStore(self.data_dir / "saves")
         self.logfilter = None         # set in start(); RNS log destination
-        self.routers = {}             # stem -> LXMRouter
+        self.routers = {}             # stem -> HostRouter
+        self._cpu_sample = None       # (t, /proc/self/stat ticks) for cpu_pct
+        self._cpu_pct_value = None
         self.identities = {}          # stem -> RNS.Identity (the mail's owner)
         self.destinations = {}        # stem -> delivery Destination
         self.stories = {}             # stem -> story Path
@@ -192,9 +273,13 @@ class Host:
         next_pull = now if polling else None
         next_health = now
         next_rollup = now
+        next_stamps = now
         while True:
             time.sleep(RUN_TICK)
             now = time.time()
+            if now >= next_stamps:
+                self._flush_stamp_tables()
+                next_stamps = now + STAMP_FLUSH_INTERVAL
             if now >= next_health:
                 self.write_health()
                 next_health = now + HEALTH_INTERVAL
@@ -237,6 +322,20 @@ class Host:
         print("jhost: polled propagation node for "
               f"{len(self.routers)} game(s)", file=sys.stderr)
 
+    def _flush_stamp_tables(self):
+        """One stamp-table write per router per tick, instead of one per stamp
+        cost the mesh happens to announce (HostRouter, STAMP_MAX_AGE).
+
+        One router failing must not stop the others: the table is a cache of
+        postage prices, and losing it costs a re-learn, never a turn.
+        """
+        for stem in sorted(self.routers):
+            try:
+                flush_stamp_table(self.routers[stem])
+            except Exception as e:
+                print(f"jhost: {stem}: stamp table not saved ({e})",
+                      file=sys.stderr)
+
     # ------------------------------------------------ internals
     def _identity(self, stem):
         """Persisted identity = stable address across restarts (spec §3:
@@ -252,9 +351,9 @@ class Host:
     def _add_game(self, story):
         stem = story.stem
         ident = self._identity(stem)
-        router = LXMRouter(identity=ident,
-                           storagepath=str(self.data_dir / "lxmf" / stem),
-                           name=stem)
+        router = HostRouter(identity=ident,
+                            storagepath=str(self.data_dir / "lxmf" / stem),
+                            name=stem)
         if self.propagation_node:
             router.set_outbound_propagation_node(self.propagation_node)
         # stamp_cost=0: free to play (spec §9; stamps are PoW, no credits).
@@ -494,6 +593,21 @@ class Host:
         errs = h["page_errors"] + h["stats_errors"]
         if errs:
             faults.append(f"{errs} page render failure{'s' if errs > 1 else ''}")
+        # Whether a reply actually reached a player is the question the pill
+        # was not asking (2026-11-23): it stayed green for six days while every
+        # turn ended `lost over link`, because every check here is a capability
+        # check and the counters that named the outage were already being
+        # written and never read. A ratio, not a rate, so a node with no
+        # players stays green. handed_off is not a loss (it means handed to the
+        # mesh) and propagated means a node holds the reply for the player.
+        lost = h["failed"] + h["dropped"] + h["abandoned"]
+        reached = h["delivered"] + h["propagated"]
+        if lost and lost > reached:
+            faults.append(f"{lost} repl{'y' if lost == 1 else 'ies'} lost to "
+                          f"the mesh, {reached} reached a player")
+        cpu = h.get("cpu_pct")
+        if cpu is not None and cpu > CPU_SATURATED:
+            faults.append(f"host CPU saturated ({cpu}% of one core)")
         # A failed external check is a fault only until a later round trip
         # succeeds; after that it is history, and history belongs in the ledger,
         # not on the face of the page. Without this rule the pill would sit on
@@ -722,6 +836,7 @@ class Host:
             "t": round(now, 3),
             "boot": self.ledger.boot,
             "uptime": round(now - self.started, 1) if self.started else None,
+            "cpu_pct": self._cpu_pct(),
             "interfaces_total": len(interfaces),
             "interfaces_online": len(online),
             "transport_configured": self._transport_configured(),
@@ -761,6 +876,35 @@ class Host:
             os.replace(tmp, self.data_dir / "health.json")
         except OSError as e:
             print(f"jhost: health write failed ({e})", file=sys.stderr)
+
+    def _cpu_pct(self):
+        """Percent of one core this process used over the last measurement
+        window, read from /proc/self/stat. None where there is no /proc (this
+        is Linux-only bookkeeping about a Linux-only fault) or where no window
+        has closed yet.
+        """
+        try:
+            with open("/proc/self/stat") as f:
+                fields = f.read()
+            fields = fields[fields.rindex(")") + 2:].split()
+            # fields are post-comm: utime and stime are the 12th and 13th
+            ticks = int(fields[11]) + int(fields[12])
+            hz = os.sysconf("SC_CLK_TCK")
+        except (OSError, ValueError, IndexError, AttributeError):
+            return None
+        if not hz:
+            return None
+        now = time.time()
+        prev = getattr(self, "_cpu_sample", None)
+        if prev is None:                    # first look: open a window
+            self._cpu_sample = (now, ticks)
+            return None
+        if now - prev[0] < self.CPU_MIN_SPAN:
+            return getattr(self, "_cpu_pct_value", None)
+        self._cpu_sample = (now, ticks)
+        self._cpu_pct_value = round(100.0 * (ticks - prev[1])
+                                    / (hz * (now - prev[0])), 1)
+        return self._cpu_pct_value
 
     def _saves_writable(self):
         probe = self.store.root / ".write-probe"

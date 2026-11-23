@@ -1,0 +1,17 @@
+[Unit]
+Description=J-Machine off-server probe: does a round trip reach the host and come back
+# INSTALLED ON THE CHECKING MACHINE, NOT THE SERVER:
+#   systemctl --user link .../deploy/jmachine-probe.service
+#   systemctl --user enable --now jmachine-probe.timer
+# See scripts/offbox_probe.sh for why the check has to live somewhere else.
+
+[Service]
+Type=oneshot
+# no User= on purpose: this is a --user unit and already runs as the user who
+# owns the RNS identity in ~/.jmachine/client
+ExecStart=/home/jrod/CODE_PROJECTS/J-Machine/scripts/offbox_probe.sh
+# the client's own budget (route discovery and the answer share it) plus margin
+# for the ack and interpreter startup. If systemd kills it first, a check that
+# was still learning routes is recorded as a failure and someone chases a fault
+# that does not exist. Raise it together with JM_BUDGET, never on its own.
+TimeoutStartSec=900

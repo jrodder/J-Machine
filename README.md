@@ -341,6 +341,40 @@ slower question and is not what this light is for.
 What none of them can prove is that a particular player's client is collecting
 replies. A probe proves the path as far as the machine it ran on.
 
+### Asking from somewhere else (operator)
+
+That last limit is the one that cost four days. On 2026-11-23 the orb was green
+and `probe_ok` was true while `delivered` sat at zero for every real player for
+six straight days: the probe shares a LAN and hub connections with the host it
+checks, so the route it exercises stays warm whatever is happening to distant
+players. Three changes came out of that.
+
+**The pill now asks whether replies reached anyone.** It faults when replies the
+host lost to the mesh (`failed` + `dropped` + `abandoned`) outnumber the ones that
+got through (`delivered` + `propagated`), and when this process's own CPU use
+crosses 80 % of a core (`cpu_pct`, in health.json). A ratio and a self-measurement,
+not a traffic rate, so a node with no players stays green — the rule that keeps
+every other check here honest. The CPU number is not tidiness: the starvation was
+*inside* the process (its LXMF routers out-competing its own Reticulum for the box's
+single core), so `CPUQuota=` and `Nice=` cannot separate a thief from a victim that
+share an address space, and no other field in the snapshot moved. What was leaking
+is shimmed in `jhost.host.HostRouter` and documented there: lxmf 1.1.1 starts a
+thread per learned stamp cost and rewrites a router's entire stamp table in it,
+and prunes that table only at startup. The fix took that host from 99.4 % of its
+one core with no players online to 14.9 %.
+
+**`scripts/offbox_probe.sh` asks from a stranger's position** — another machine,
+out on the public testnet, doing a `jclient ping` on an hourly `--user` timer
+(`deploy/jmachine-probe.{service,timer}`). It needs a hand-written RNS config with
+real hub interfaces, because `jclient` scaffolds a loopback-only one that reaches
+nothing and proves nothing. Verdicts pile up in the user journal, which is what
+makes an outage datable after the fact instead of a guess.
+
+**`deploy/jhost.service` gained `RuntimeMaxSec=6h`** beside `Restart=always`,
+because every fault that took the host down grew with uptime and could only be
+cleared by a new process — and a periodic restart is well inside the mesh's
+announce budget (32 destinations, 4 restarts a day, against ~1/hour each).
+
 ### Guestbook (operator)
 
 One board for the whole server, linked from the top of the page

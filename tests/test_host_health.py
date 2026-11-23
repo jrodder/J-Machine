@@ -1,7 +1,9 @@
 """Readiness snapshot (spec §3): the checks that need no player, because a
 quiet node and a broken node look identical from message counters alone."""
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -132,6 +134,84 @@ class Health(unittest.TestCase):
         health = self.host(PUBLIC).readiness()
         for key in ("stats_requests", "stats_errors", "last_stats"):
             self.assertIn(key, health)
+
+class WhatReachedAPlayer(unittest.TestCase):
+    """The blind spot behind a four-day silence (2026-11-23).
+
+    The pill stayed green for six days while every player reply died: nothing
+    in readiness() asked whether a reply reached anyone, so the outage's own
+    evidence -- `lost over link` in the journal, delivered == 0 in the day log
+    -- never reached the face of the page. These faults look only at what this
+    process recorded itself, so they need no player and no outside observer.
+    """
+
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory()
+        root = Path(self.d.name)
+        (root / "games").mkdir()
+        (root / "data").mkdir()
+        self.host = Host(root / "data", root / "games")
+        self.addCleanup(self.d.cleanup)
+
+    def faults(self):
+        return " ".join(self.host._service()["faults"])
+
+    def test_turns_in_and_nobody_reached_is_named(self):
+        s = self.host.stats
+        s["inbound"] = s["handed_off"] = s["failed"] = s["dropped"] = 4
+        self.assertIn("replies lost", self.faults())
+
+    def test_the_names_that_are_not_a_loss_do_not_alone_convict(self):
+        # handed_off means handed to the mesh, and propagated means a node is
+        # holding it for the player: neither is a loss
+        s = self.host.stats
+        s["inbound"] = s["handed_off"] = 4
+        s["propagated"] = 3
+        s["failed"] = 1
+        self.assertNotIn("replies lost", self.faults())
+
+    def test_mostly_getting_through_is_not_a_fault(self):
+        s = self.host.stats
+        s["inbound"] = 21
+        s["delivered"] = 20
+        s["failed"] = s["dropped"] = s["handed_off"] = 1
+        self.assertNotIn("replies lost", self.faults())
+
+    def test_a_node_with_no_players_is_still_green(self):
+        # the rule that keeps every other readiness check honest: no traffic
+        # is not a fault, or a quiet node would be red forever
+        self.assertNotIn("replies lost", self.faults())
+
+    def test_a_saturated_cpu_is_named(self):
+        # the fault that broke everything was intra-process: LXMF routers
+        # out-competing Reticulum for the box's single core. 10/10 interfaces
+        # online and probe_ok true while every reply failed
+        self.host._cpu_pct = lambda: 96.0
+        self.assertIn("CPU", self.faults())
+
+    def test_cpu_headroom_is_not_a_fault(self):
+        self.host._cpu_pct = lambda: 12.0
+        self.assertNotIn("CPU", self.faults())
+
+    def test_a_host_that_cannot_measure_its_cpu_says_nothing(self):
+        self.host._cpu_pct = lambda: None
+        self.assertNotIn("CPU", self.faults())
+
+    def test_cpu_reaches_the_health_file(self):
+        self.host._cpu_pct = lambda: 33.3
+        self.assertEqual(self.host.readiness()["cpu_pct"], 33.3)
+
+    def test_the_cpu_number_is_this_process_and_this_window(self):
+        self.host.CPU_MIN_SPAN = 0
+        self.assertIsNone(self.host._cpu_pct())   # no window has closed yet
+        t0 = time.time()
+        while time.time() - t0 < 0.3:             # spend a little of the core
+            pass
+        pct = self.host._cpu_pct()
+        self.assertIsNotNone(pct)
+        self.assertGreater(pct, 0)
+        self.assertLessEqual(pct, 100.0 * (os.cpu_count() or 1) + 5)
+
 
 if __name__ == "__main__":
     unittest.main()
