@@ -431,3 +431,36 @@ starts its own host, so it catches code rot and never sees the live process.
 What it cannot prove is the thing no on-box check can: that the public mesh can
 reach this host, or that a human read a reply. A green canary means "this
 machine serves a player correctly when one arrives over loopback".
+
+### What is still unproven (operator)
+
+Written down so the next person does not inherit only a confident story. The
+2026-11-23 outage is *mitigated*, not fully explained; see "Is it awake?" above.
+
+1. **Root cause of the six silent days is not closed.** The stamp-cost path was
+   measured, on the production core, at `2.07 calls/s x 255.6 ms` for a 793 KiB
+   table = **at least 53 % of one core** — dominant, but not the 99.4 % observed,
+   and CPU fell to 8 % at the same moment the process restarted, so the restart
+   (fresh tables, cleared RNS cache, killed orphan threads, re-announced 32
+   destinations) is a confound that cannot be separated on one core. Competing
+   explanation that also fits `delivered = 0`: hub-side announce rate-limiting.
+   Both are now reduced, so the box is probably better off either way.
+2. **Whether the fix is doing the work or the 6 h recycle is hiding a leak.**
+   Decidable near the end of a recycle window (hour 5.5), before the restart:
+   `.venv/bin/python -c "import glob,os;t=[os.path.getsize(p) for p in
+   glob.glob('data/lxmf/*/lxmf/outbound_stamp_costs')];print(max(t)/1024,
+   sum(t)/1024)"` — KiB per router should still be ~11-20, not hundreds. Outage
+   value was 793 KiB per router.
+3. **The propagation-node fallback has never been exercised.** `propagated = 0`
+   and no fallback errors, but nothing has ever needed it: it needs a client the
+   host genuinely cannot link to. Until one runs, the safety net is untested, and
+   the node it points at (`f998c339…`) is unverified.
+4. **The rest of the idle load is unattributed.** ~90 % of the box's ~7-10 %
+   idle CPU is not the stamp path. Candidates, none yet priced: RNS cache
+   cleaning over ~33,500 stored files, and ~29 accumulated `Link.__watchdog_job`
+   threads for links that were never torn down.
+5. **Two hubs are disabled** (`Jlamothe`, `bnZ`) after they reset this peer into
+   permanent interface teardowns. If a *remaining* hub starts churning, the
+   announce-burst theory behind that is wrong and the fix is different hubs.
+6. **Rotate the operator password** used for these deploys; it appears in earlier
+   session transcripts.
