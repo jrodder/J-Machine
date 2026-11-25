@@ -411,9 +411,11 @@ DIV = "-"
 # The Android map helper link (a plain string, not an f-string — see the PEP
 # 701 note in render_page): meshchat's onNodePageUrlClick opens http(s) targets
 # in a new browser tab (NomadNetworkPage.vue), so this leaves the mesh cleanly.
-# Defined after the tags it uses.
-MAPPER_LINK = (VIOLET + "`[Droid Mapper Redux (Android map helper)`"
-               + "https://github.com/jrodder/droid-mapper-redux]" + RESET)
+# Defined after the tags it uses. It wears the board's band, not its own hue:
+# the three host links are one control group, and the emoji is what says which
+# one leaves the mesh.
+MAPPER_LINK = (BAR_BOARD + "🗺️ `[Droid Mapper Redux (Android map helper)`"
+               + "https://github.com/jrodder/droid-mapper-redux]" + CLOSE_BAR)
 
 # --- Service status ---------------------------------------------------------
 # The one operational element on the player-facing page, so its colour means
@@ -549,11 +551,14 @@ def render_page(name, games, stats, manuals=None, guestbook=None,
         # page's last line, i.e. below a 25-game scroll, and it is a link people
         # want before they play; grouping the rest is the same reasoning one
         # level further, because a visitor who wants one wants to know the others
-        # exist. Stacked, not joined with ' · ': three long links on one line
-        # word-wrap into a wall on a phone, and a wrapped micron link loses its
-        # clickability. Each link closes its own styling: a bare ` right after
-        # ']' is eaten by link parsing (measured), so each carries its own reset,
-        # and the mapper brings its own hue.
+        # exist. Stacked with a blank line between, not joined with ' · ': three
+        # long links on one line word-wrap into a wall on a phone, and a wrapped
+        # micron link loses its clickability. The blank lines are the only
+        # spacing there is — meshchat turns every line into its own <div> and an
+        # empty line into a <br> (MicronParser.js), so consecutive lines sit at
+        # plain line-height. Each link closes its own styling: a bare ` right
+        # after ']' is eaten by link parsing (measured), so each carries its own
+        # reset, and all three wear the same band.
         links = []
         if guestbook:
             links.append(BAR_BOARD + "🖊️ `[Guestbook (post by message)`"
@@ -565,7 +570,7 @@ def render_page(name, games, stats, manuals=None, guestbook=None,
             links.append(BAR_BOARD + "📊 `[Activity & stats`" + stats_page
                          + "]" + CLOSE_BAR)
         links.append(MAPPER_LINK)
-        lines.extend(links)
+        lines.append("\n\n".join(links))   # blank line between: see above
         lines.append(DIV)   # a rule separates more strongly than a blank line
     lines.append(BAR_SECTION + "Games" + CLOSE_BAR)
     for stem, addr in games:

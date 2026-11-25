@@ -536,7 +536,7 @@ class Helpers(unittest.TestCase):
         self.assertIn("🖊️ `[Guestbook (post by message)`abcd:/page/guestbook.mu]",
                       paged)
         # ...separated from the game list by a micron rule
-        self.assertIn("droid-mapper-redux]`f\n-\n`B153`Faff`!Games", paged)
+        self.assertIn("droid-mapper-redux]`b`f`!\n-\n`B153`Faff`!Games", paged)
         # parse_page round-trips the address out of the link label (the real
         # parse_page is exercised over the wire in the network suite)
         import re
@@ -568,7 +568,10 @@ class Helpers(unittest.TestCase):
                       link_lines[-1])
         self.assertLess(paged.index("Guestbook"), paged.index("Droid Mapper Redux"))
         self.assertNotIn("Mapper", paged.split("`B153`Faff`!Games")[1])
-        # all three host links, when the activity page exists: three lines
+        # all three host links, when the activity page exists: three lines, one
+        # link each, one band (a matched group, not three unrelated colours),
+        # and a blank line between each — meshchat gives every line its own div
+        # and only an empty line (<br>) makes space
         three = render_page("J", [("zork1", "<ab:cd:ef>")], stats,
                             guestbook="abcd:/page/guestbook.mu",
                             stats_page="abcd:/page/stats.mu")
@@ -576,6 +579,8 @@ class Helpers(unittest.TestCase):
                  if "Guestbook" in l or "Activity" in l or "Mapper" in l]
         self.assertEqual(len(links), 3)
         self.assertTrue(all(l.count("`[") == 1 for l in links))   # one link/line
+        self.assertTrue(all(l.startswith("`B313`Ffaf`!") for l in links))
+        self.assertIn("guestbook.mu]`b`f`!\n\n", three)
 
     def test_write_rns_config(self):
         with tempfile.TemporaryDirectory() as d:
