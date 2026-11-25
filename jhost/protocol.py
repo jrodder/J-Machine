@@ -412,8 +412,8 @@ DIV = "-"
 # 701 note in render_page): meshchat's onNodePageUrlClick opens http(s) targets
 # in a new browser tab (NomadNetworkPage.vue), so this leaves the mesh cleanly.
 # Defined after the tags it uses.
-MAPPER_LINK = (VIOLET + "`[Droid-Mapper (Android map helper)`"
-               + "https://github.com/jrodder/Droid-Mapper]" + RESET)
+MAPPER_LINK = (VIOLET + "`[Droid Mapper Redux (Android map helper)`"
+               + "https://github.com/jrodder/droid-mapper-redux]" + RESET)
 
 # --- Service status ---------------------------------------------------------
 # The one operational element on the player-facing page, so its colour means
@@ -512,7 +512,7 @@ def render_page(name, games, stats, manuals=None, guestbook=None,
     shows its stem. Multi-word titles are safe for the parse contract because
     a '> ' line only counts as a game when the line under it is an lxmf
     address link (see jclient parse_page).
-    The page footer links the Android mapper (Droid-Mapper): a plain
+    The page footer links the Android mapper (Droid Mapper Redux): a plain
     https:// link target — meshchat's onNodePageUrlClick opens http(s)
     targets in a new browser tab (NomadNetworkPage.vue, verified)."""
     # plural() is at module level: the activity page counts the same words.
@@ -544,14 +544,16 @@ def render_page(name, games, stats, manuals=None, guestbook=None,
              BAR_ODOMETER + " · ".join(bar) + CLOSE_BAR,
              DIV]
     if guestbook or stats_page:
-        # ONE line, everything about this host rather than this game: the board,
-        # the activity page, the map helper. The mapper used to be the page's
-        # last line, i.e. below a 25-game scroll, and it is a link people want
-        # before they play; grouping the rest is the same reasoning one level
-        # further, because a visitor who wants one wants to know the others
-        # exist. Each link closes its own styling: a bare ` right after ']' is
-        # eaten by link parsing (measured), so each carries its own reset before
-        # the separator, and the mapper brings its own hue.
+        # ONE line each, everything about this host rather than this game: the
+        # board, the activity page, the map helper. The mapper used to be the
+        # page's last line, i.e. below a 25-game scroll, and it is a link people
+        # want before they play; grouping the rest is the same reasoning one
+        # level further, because a visitor who wants one wants to know the others
+        # exist. Stacked, not joined with ' · ': three long links on one line
+        # word-wrap into a wall on a phone, and a wrapped micron link loses its
+        # clickability. Each link closes its own styling: a bare ` right after
+        # ']' is eaten by link parsing (measured), so each carries its own reset,
+        # and the mapper brings its own hue.
         links = []
         if guestbook:
             links.append(BAR_BOARD + "🖊️ `[Guestbook (post by message)`"
@@ -563,7 +565,7 @@ def render_page(name, games, stats, manuals=None, guestbook=None,
             links.append(BAR_BOARD + "📊 `[Activity & stats`" + stats_page
                          + "]" + CLOSE_BAR)
         links.append(MAPPER_LINK)
-        lines.append((GREY + " · " + RESET).join(links))
+        lines.extend(links)
         lines.append(DIV)   # a rule separates more strongly than a blank line
     lines.append(BAR_SECTION + "Games" + CLOSE_BAR)
     for stem, addr in games:

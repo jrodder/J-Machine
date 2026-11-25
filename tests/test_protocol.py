@@ -536,7 +536,7 @@ class Helpers(unittest.TestCase):
         self.assertIn("🖊️ `[Guestbook (post by message)`abcd:/page/guestbook.mu]",
                       paged)
         # ...separated from the game list by a micron rule
-        self.assertIn("Droid-Mapper]`f\n-\n`B153`Faff`!Games", paged)
+        self.assertIn("droid-mapper-redux]`f\n-\n`B153`Faff`!Games", paged)
         # parse_page round-trips the address out of the link label (the real
         # parse_page is exercised over the wire in the network suite)
         import re
@@ -556,13 +556,26 @@ class Helpers(unittest.TestCase):
                            PlayerStats({}, 0, 0, 0))
         self.assertIn("`[<ab:cd:12:34:56:78:9a:bc:de:f0:11:22:33:44:55:66>`"
                       "lxmf@abcd123456789abcdef0112233445566]", full)        # mapper link: it no longer sits at the bottom of a 25-game scroll, it
-        # rides the guestbook line to the RIGHT of the board link (meshchat
-        # opens https:// targets in a new browser tab)
-        gb_line = next(l for l in paged.splitlines() if "Guestbook" in l)
-        self.assertIn("`[Droid-Mapper (Android map helper)`"
-                      "https://github.com/jrodder/Droid-Mapper]", gb_line)
-        self.assertLess(gb_line.index("Guestbook"), gb_line.index("Droid-Mapper"))
-        self.assertNotIn("Droid-Mapper", paged.split("`B153`Faff`!Games")[1])
+        # sits with the other host links above the game list (meshchat opens
+        # https:// targets in a new browser tab). Those links stack ONE PER LINE:
+        # three long links joined on one line word-wrap on a phone, and a wrapped
+        # micron link is no longer clickable.
+        link_lines = [l for l in paged.splitlines()
+                      if "Guestbook" in l or "Mapper" in l]
+        self.assertEqual(len(link_lines), 2)   # this render has no stats page
+        self.assertIn("`[Droid Mapper Redux (Android map helper)`"
+                      "https://github.com/jrodder/droid-mapper-redux]",
+                      link_lines[-1])
+        self.assertLess(paged.index("Guestbook"), paged.index("Droid Mapper Redux"))
+        self.assertNotIn("Mapper", paged.split("`B153`Faff`!Games")[1])
+        # all three host links, when the activity page exists: three lines
+        three = render_page("J", [("zork1", "<ab:cd:ef>")], stats,
+                            guestbook="abcd:/page/guestbook.mu",
+                            stats_page="abcd:/page/stats.mu")
+        links = [l for l in three.splitlines()
+                 if "Guestbook" in l or "Activity" in l or "Mapper" in l]
+        self.assertEqual(len(links), 3)
+        self.assertTrue(all(l.count("`[") == 1 for l in links))   # one link/line
 
     def test_write_rns_config(self):
         with tempfile.TemporaryDirectory() as d:
